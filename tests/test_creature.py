@@ -116,3 +116,81 @@ def test_cli_creature_flow(tmp_path, capsys):
     data["variants"]["normal"]["enabled"] = False
     path.write_text(json.dumps(data))
     assert main(["creature", "validate", str(path)]) == EXIT_CHECK_FAILED
+
+
+# --- reserved combat section ---------------------------------------------------
+
+def _with_clips():
+    c = new_creature("aniimo_test", "Test")
+    for i, name in enumerate(["Ult_Start", "Ult_Loop", "Ult_End", "Bite"]):
+        c["assets"].append({"ref": {"path": "c.bundle", "sha256": SHA, "object": f"cab:{i}"}, "role": "animation",
+                            "name": name, "association": "confirmed"})
+    c["assets"].append({"ref": {"path": "c.bundle", "sha256": SHA, "object": "cab:fx"}, "role": "other",
+                        "name": "UltBurst", "association": "confirmed"})
+    return c
+
+
+def test_default_combat_section_maps_ultimate_to_partner_skill():
+    c = new_creature("aniimo_test", "Test")
+    assert c["combat"] == {"profiles": ["ai_companion"], "abilities": [],
+                           "ultimate": {"ability": None, "target": "partner_skill"}}
+    assert validate_creature(c) == []
+
+
+def test_multi_phase_ultimate_is_valid():
+    c = _with_clips()
+    c["combat"]["abilities"] = [
+        {"id": "ult", "kind": "ultimate", "provenance": "inferred", "name": "Thorn Storm",
+         "phases": [{"clip": "cab:0", "label": "windup"}, {"clip": "cab:1", "label": "active"},
+                    {"clip": "cab:2", "label": "recovery"}],
+         "effects": {"vfx": ["cab:fx"]},
+         "parameters": {"cooldown_s": {"value": 30, "provenance": "user"}},
+         "palworld_mapping": {"target": "partner_skill", "status": "proposed"}},
+        {"id": "bite", "kind": "basic", "provenance": "inferred", "phases": [{"clip": "cab:3"}]},
+    ]
+    c["combat"]["ultimate"]["ability"] = "ult"
+    assert validate_creature(c) == []
+
+
+@pytest.mark.parametrize("mutate,needle", [
+    (lambda cb: cb["abilities"].append({"id": "x", "kind": "laser", "provenance": "user"}), "kind"),
+    (lambda cb: cb["abilities"].append({"id": "x", "kind": "basic", "provenance": "guess"}), "provenance"),
+    (lambda cb: cb["abilities"].append({"id": "x", "kind": "basic", "provenance": "user",
+                                        "phases": [{"clip": "cab:missing"}]}), "animation assets"),
+    (lambda cb: cb["abilities"].extend([{"id": "x", "kind": "basic", "provenance": "user"}] * 2), "duplicated"),
+    (lambda cb: cb["abilities"].append({"id": "x", "kind": "basic", "provenance": "user",
+                                        "parameters": {"damage": 50}}), "provenance"),
+    (lambda cb: cb["abilities"].append({"id": "x", "kind": "basic", "provenance": "user",
+                                        "effects": {"vfx": ["cab:unknown"]}}), "asset object ids"),
+    (lambda cb: cb["abilities"].append({"id": "x", "kind": "basic", "provenance": "user",
+                                        "palworld_mapping": {"target": "summon"}}), "palworld_mapping.target"),
+    (lambda cb: cb["ultimate"].update(ability="nope"), "reference an ability"),
+    (lambda cb: (cb["abilities"].append({"id": "b", "kind": "basic", "provenance": "user"}),
+                 cb["ultimate"].update(ability="b")), "kind 'ultimate'"),
+    (lambda cb: cb["ultimate"].update(target="random_attack"), "ultimate.target"),
+    (lambda cb: cb.update(profiles=["flying_mount"]), "profiles"),
+])
+def test_combat_validation_errors(mutate, needle):
+    c = _with_clips()
+    mutate(c["combat"])
+    errors = validate_creature(c)
+    assert any(needle in e for e in errors), errors
+
+
+def test_variant_combat_overrides_need_verified_or_user():
+    c = _rare()
+    c["variants"]["shiny"]["combat_overrides"] = {"provenance": "inferred"}
+    assert any("combat_overrides" in e for e in validate_creature(c))
+    c["variants"]["shiny"]["combat_overrides"] = {"provenance": "user"}
+    assert validate_creature(c) == []
+    c["variants"]["normal"]["combat_overrides"] = {"provenance": "user"}
+    assert any("base configuration" in e for e in validate_creature(c))
+
+
+def test_schema_v010_documents_still_validate():
+    c = new_creature("aniimo_test", "Test")
+    c["schema_version"] = "0.1.0"
+    del c["combat"], c["skeleton"]
+    assert validate_creature(c) == []
+    c["schema_version"] = "1.0.0"
+    assert any("schema_version" in e for e in validate_creature(c))

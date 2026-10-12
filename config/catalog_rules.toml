@@ -1,0 +1,32 @@
+# Default catalog / association rules (mirrors src/aniimo_pal/catalog/rules.py; a test keeps them in sync).
+# Copy to <workspace>/rules/catalog.toml and pass with --rules to tune for a game; refine as you port creatures.
+# Matching is on name tokens (split on _ - . / space and camelCase), case-insensitive.
+
+[catalog]
+# Also treat MeshRenderer (non-skinned) prefabs as creature candidates.
+include_static_meshes = false
+# An unlinked AnimationClip is associated with a skeleton only if at least this many of its
+# bound transform paths (CRC32 hashes) exist in the skeleton AND this fraction of them matches.
+min_binding_matches = 3
+min_binding_ratio = 0.8
+# Tokens ignored when deriving a species name from a prefab name.
+stop_tokens = ["prefab", "body", "mesh", "model", "lod0", "skin", "mdl", "char", "npc"]
+
+# Name keywords that mark a prefab/material as a rare variant (INFERRED evidence; user confirms).
+[catalog.variant_keywords]
+shiny = ["shiny", "rare", "alt", "color2", "colour2"]
+prismana = ["prismana", "prism", "rainbow"]
+
+# Name keywords for guessing an animation clip's role (INFERRED; never treated as game data).
+[catalog.clip_role_keywords]
+idle = ["idle", "stand", "wait", "breath"]
+walk = ["walk"]
+run = ["run", "sprint", "dash"]
+jump = ["jump", "fall", "land"]
+attack = ["attack", "atk", "melee", "bite", "claw", "slash", "combo"]
+skill = ["skill", "spell", "cast", "special"]
+ultimate = ["ult", "ultimate"]
+hit_react = ["hit", "hurt", "damage", "dmg"]
+death = ["die", "death", "dead"]
+sleep = ["sleep", "rest"]
+transform = ["transform", "morph"]

@@ -11,6 +11,7 @@ an association survives re-scans and game updates that move files; a changed
 hash means the asset really changed and must be re-confirmed.
 
 Schema version 0.x: fields may still change before the editor milestone.
+0.1.x documents are read as-is (all 0.2 additions are optional).
 """
 
 from __future__ import annotations
@@ -20,18 +21,22 @@ import re
 from pathlib import Path
 from typing import Any
 
+from aniimo_pal.creature.combat import new_combat_section, validate_combat, validate_variant_overrides
 from aniimo_pal.creature.variants import variant_probabilities
 from aniimo_pal.errors import ToolkitError
 from aniimo_pal.manifest.io import write_json_atomic
 
 SCHEMA_ID = "aniimo-pal/creature"
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
-STATUSES = ("draft", "extracted", "mapped", "converted", "configured", "validated", "exported")
+# Workflow order: associations are reviewed ("mapped") before files are extracted.
+STATUSES = ("draft", "mapped", "extracted", "converted", "configured", "validated", "exported")
 VARIANTS = ("normal", "shiny", "prismana")
+ASSET_VARIANTS = ("shared", *VARIANTS, "unclassified")
+PROVENANCE = ("verified", "inferred", "user")
 ASSET_ROLES = ("mesh", "skeleton", "texture", "material", "animation", "icon", "audio", "other")
 ASSOCIATION_STATES = ("proposed", "confirmed", "rejected")
 INTEGRATION_MODES = ("replace", "new_pal")
@@ -58,6 +63,8 @@ def new_creature(creature_id: str, display_name: str) -> dict[str, Any]:
             "prismana": {"enabled": False, "spawn_probability": 0.0},
         },
         "integration": {"mode": "replace", "replace_target": None, "notes": ""},
+        "skeleton": None,
+        "combat": new_combat_section(),
     }
 
 
@@ -72,8 +79,11 @@ def validate_creature(data: Any) -> list[str]:
         errors.append("id must match ^[a-z][a-z0-9_]{2,47}$")
     if not isinstance(data.get("display_name"), str) or not data["display_name"].strip():
         errors.append("display_name must be a non-empty string")
+    if data.get("schema") == SCHEMA_ID and not str(data.get("schema_version", "")).startswith("0."):
+        errors.append(f"unsupported schema_version {data.get('schema_version')!r} (expected 0.x)")
     if data.get("status") not in STATUSES:
         errors.append(f"status must be one of {STATUSES}")
+    status_rank = STATUSES.index(data["status"]) if data.get("status") in STATUSES else 0
 
     variants = data.get("variants")
     if not isinstance(variants, dict) or set(variants) != set(VARIANTS):
@@ -118,19 +128,34 @@ def validate_creature(data: Any) -> list[str]:
         if a.get("role") not in ASSET_ROLES:
             errors.append(f"{where}.role must be one of {ASSET_ROLES}")
         variant = a.get("variant", "shared")
-        if variant != "shared" and variant not in VARIANTS:
-            errors.append(f"{where}.variant must be 'shared' or one of {VARIANTS}")
-        elif variant in ("shiny", "prismana") and variants and not variants[variant].get("enabled"):
-            errors.append(f"{where} is assigned to disabled variant {variant!r}")
         state = a.get("association")
+        if variant not in ASSET_VARIANTS:
+            errors.append(f"{where}.variant must be one of {ASSET_VARIANTS}")
+        elif variant in ("shiny", "prismana") and variants and not variants[variant].get("enabled") \
+                and state != "rejected":
+            errors.append(f"{where} is assigned to disabled variant {variant!r}")
+        elif variant == "unclassified" and status_rank >= STATUSES.index("mapped") and state != "rejected":
+            errors.append(f"{where}: variant must be resolved (not 'unclassified') once status is 'mapped'")
+        if a.get("provenance", "user") not in PROVENANCE:
+            errors.append(f"{where}.provenance must be one of {PROVENANCE}")
         if state not in ASSOCIATION_STATES:
             errors.append(f"{where}.association must be one of {ASSOCIATION_STATES}")
         elif state == "confirmed" and sha is None:
             errors.append(f"{where}: confirmed associations must pin ref.sha256")
+        elif state == "proposed" and status_rank >= STATUSES.index("mapped"):
+            errors.append(f"{where}: proposed associations must be confirmed or rejected once status is 'mapped'")
         key = (str(ref.get("path")), str(ref.get("object", "")), str(variant))
         if key in seen:
             errors.append(f"{where} duplicates an earlier asset reference")
         seen.add(key)
+
+    anim_objects = {str((a.get("ref") or {}).get("object")) for a in assets
+                    if isinstance(a, dict) and a.get("role") == "animation" and a.get("association") != "rejected"}
+    other_objects = {str((a.get("ref") or {}).get("object")) for a in assets
+                     if isinstance(a, dict) and a.get("role") != "animation" and a.get("association") != "rejected"}
+    errors.extend(validate_combat(data.get("combat"), anim_objects, other_objects))
+    if isinstance(variants, dict) and variants:
+        errors.extend(validate_variant_overrides(variants))
 
     integ = data.get("integration") or {}
     if integ.get("mode") not in INTEGRATION_MODES:

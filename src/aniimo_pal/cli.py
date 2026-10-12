@@ -213,11 +213,181 @@ def cmd_config(args: argparse.Namespace, config: Config) -> int:
 def cmd_creature_init(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.creature.model import creature_path, new_creature, save_creature
 
-    path = creature_path(args.workspace, args.id)
+    if args.from_catalog:
+        from aniimo_pal.creature.workflow import creature_from_catalog, pending
+
+        if not args.species:
+            raise ToolkitError("--species is required with --from-catalog")
+        data = creature_from_catalog(
+            _read_json(args.from_catalog), args.species, creature_id=args.id, display_name=args.name,
+            shiny_probability=args.shiny_probability, prismana_probability=args.prismana_probability,
+            auto_confirm_verified=not args.propose_all)
+    else:
+        if not args.id or not args.name:
+            raise ToolkitError("--id and --name are required (or use --from-catalog/--species)")
+        data = new_creature(args.id, args.name)
+    path = creature_path(args.workspace, data["id"])
     if path.exists():
         raise ToolkitError(f"creature project already exists: {path} (projects are never overwritten)")
-    save_creature(new_creature(args.id, args.name), path)
+    save_creature(data, path)
     print(f"created {path}")
+    if args.from_catalog:
+        print(f"assets: {len(data['assets'])}, awaiting review: {len(pending(data))}, status: {data['status']}")
+    return EXIT_OK
+
+
+def _read_json(path: str) -> dict[str, Any]:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError as exc:
+        raise ToolkitError(f"file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ToolkitError(f"{path} is not valid JSON: {exc}") from exc
+
+
+def _parse_indices(text: str | None) -> list[int]:
+    if not text:
+        return []
+    out = []
+    for part in text.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.extend(range(int(a), int(b) + 1))
+        elif part:
+            out.append(int(part))
+    return out
+
+
+def cmd_creature_review(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.creature.model import load_creature
+    from aniimo_pal.creature.workflow import pending
+
+    c = load_creature(args.file)
+    todo = set(pending(c))
+    print(f"{c['id']} ({c['display_name']}) status={c['status']}  pending={len(todo)}")
+    for p in c.get("prefabs", []):
+        print(f"  prefab {p['name']!s:<32} variant={p['variant']:<12} {', '.join(p.get('variant_evidence') or [])}")
+    print(f"  {'#':>3} {'role':<10} {'variant':<12} {'assoc':<10} {'prov':<9} {'name':<36} evidence")
+    for i, a in enumerate(c["assets"]):
+        if args.pending and i not in todo:
+            continue
+        mark = "*" if i in todo else " "
+        extra = f" role_guess={a['role_guess']}" if a.get("role_guess") else ""
+        print(f" {mark}{i:>3} {a['role']:<10} {a.get('variant', 'shared'):<12} {a['association']:<10} "
+              f"{a.get('provenance', 'user'):<9} {str(a.get('name'))[:36]:<36} {', '.join(a.get('evidence') or [])}{extra}")
+    for note in c.get("notes", []):
+        print(f"  note: {note}")
+    return EXIT_OK
+
+
+def cmd_creature_associate(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.creature.model import load_creature, save_creature
+    from aniimo_pal.creature.workflow import pending, set_associations
+
+    c = load_creature(args.file)
+    variants = {}
+    for item in args.variant or []:
+        idx, _, name = item.partition("=")
+        variants[int(idx)] = name
+    set_associations(c, confirm=_parse_indices(args.confirm), reject=_parse_indices(args.reject),
+                     variants=variants, confirm_all=args.confirm_all)
+    save_creature(c, args.file)
+    print(f"saved {args.file}: status={c['status']}, pending={len(pending(c))}")
+    return EXIT_OK
+
+
+def cmd_creature_extract(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.creature.model import load_creature, save_creature
+    from aniimo_pal.extract import extract_creature
+
+    path = Path(args.file)
+    c = load_creature(path)
+    report = extract_creature(c, path.parent, args.root, include_proposed=args.include_proposed)
+    save_creature(c, path)
+    s = report["summary"]
+    print(f"extracted ok={s['ok']} skipped={s['skipped']} errors={s['errors']} -> {path.parent / 'extract' / 'unitypy'}")
+    for r in report["outputs"]:
+        if r["status"] == "error":
+            print(f"ERROR asset {r['index']}: {r['error']}")
+    return EXIT_OK if s["errors"] == 0 else EXIT_CHECK_FAILED
+
+
+def cmd_creature_assetripper(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.adapters.assetripper import AssetRipperAdapter
+    from aniimo_pal.creature.model import load_creature, save_creature
+    from aniimo_pal.extract import assetripper_export_creature
+
+    exe = AssetRipperAdapter(args.assetripper or config.tools.assetripper).locate()
+    if exe is None:
+        raise ToolkitError("AssetRipper not found: pass --assetripper PATH or set [tools].assetripper in the config")
+    path = Path(args.file)
+    c = load_creature(path)
+    if c.get("status") == "draft" and not args.include_proposed:
+        raise ToolkitError("creature is still 'draft': review associations first, or pass --include-proposed")
+    report = assetripper_export_creature(c, path.parent, args.root, exe, mode=args.mode,
+                                         include_proposed=args.include_proposed, replace=args.replace)
+    save_creature(c, path)
+    s = report["summary"]
+    print(f"AssetRipper {args.mode}: files {s['files_written']}, assets matched {s['assets_matched']}, "
+          f"unmatched {s['assets_unmatched']}, prefabs matched {s['prefabs_matched']}")
+    for m in report["assets"]:
+        if not m["files"]:
+            print(f"  unmatched asset {m['index']}: {m['role']} {m['name']}")
+    return EXIT_OK
+
+
+def cmd_inventory(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.inventory import build_inventory
+    from aniimo_pal.manifest.io import check_output_location, read_manifest, write_json_atomic
+
+    out = Path(args.output)
+    check_output_location(out, [Path(args.root)])
+    doc = build_inventory(read_manifest(args.manifest), args.root, include=args.include or (),
+                          verify_hashes=not args.no_verify)
+    write_json_atomic(doc, out, indent=config.manifest.indent)
+    s = doc["summary"]
+    print(f"containers {s['container_count']} (errors {s['container_errors']}, skipped {s['skipped_count']}), "
+          f"objects {s['object_count']} (errors {s['object_errors']}), unresolved refs {s['unresolved_refs']}")
+    for cls, n in sorted(s["by_class"].items(), key=lambda kv: (-kv[1], kv[0]))[:15]:
+        print(f"  {cls:<28} {n}")
+    print(f"objects:    {out}")
+    return EXIT_OK
+
+
+def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.catalog import build_catalog, load_rules
+    from aniimo_pal.manifest.io import write_json_atomic
+
+    doc = build_catalog(_read_json(args.objects), load_rules(args.rules))
+    write_json_atomic(doc, args.output, indent=config.manifest.indent)
+    s = doc["summary"]
+    print(f"species {s['species_count']} from {s['prefab_count']} prefabs; unassigned clips {s['unassigned_clip_count']}")
+    print(f"catalog:    {args.output}")
+    return EXIT_OK
+
+
+def cmd_catalog_list(args: argparse.Namespace, config: Config) -> int:
+    doc = _read_json(args.catalog)
+    if args.json:
+        _print_json([{"key": s["key"], "display_name": s["display_name"],
+                      "variants": sorted({p["variant"] for p in s["prefabs"]}),
+                      "assets": len(s["assets"]), "animations": len(s["animations"]),
+                      "warnings": len(s["warnings"])} for s in doc["species"]])
+        return EXIT_OK
+    print(f"{'key':<28} {'name':<24} {'variants':<28} {'assets':>6} {'anims':>6} {'warn':>5}")
+    for s in doc["species"]:
+        variants = ",".join(sorted({p["variant"] for p in s["prefabs"]}))
+        print(f"{s['key']:<28} {s['display_name'][:24]:<24} {variants:<28} {len(s['assets']):>6} "
+              f"{len(s['animations']):>6} {len(s['warnings']):>5}")
+    return EXIT_OK
+
+
+def cmd_catalog_show(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.creature.workflow import find_species
+
+    _print_json(find_species(_read_json(args.catalog), args.species))
     return EXIT_OK
 
 
@@ -315,13 +485,69 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("config", help="print the effective configuration as JSON")
     p.set_defaults(func=cmd_config)
 
+    p = sub.add_parser("inventory", help="list objects inside supported Unity containers (UnityPy, read-only)")
+    p.add_argument("manifest")
+    p.add_argument("root", help="the directory the manifest was scanned from")
+    p.add_argument("-o", "--output", required=True, help="objects.json path (outside ROOT)")
+    p.add_argument("--include", action="append", metavar="GLOB", help="only containers whose path matches")
+    p.add_argument("--no-verify", action="store_true", help="skip re-hashing files against the manifest")
+    p.set_defaults(func=cmd_inventory)
+
+    catalog = sub.add_parser("catalog", help="creature catalog built from an object inventory")
+    catsub = catalog.add_subparsers(dest="catalog_command", required=True, metavar="ACTION")
+    p = catsub.add_parser("build", help="find creatures and associate their assets")
+    p.add_argument("objects", help="objects.json from `inventory`")
+    p.add_argument("-o", "--output", required=True)
+    p.add_argument("--rules", help="catalog rules TOML (default: built-in, see config/catalog_rules.toml)")
+    p.set_defaults(func=cmd_catalog_build)
+    p = catsub.add_parser("list", help="list species in a catalog")
+    p.add_argument("catalog")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_catalog_list)
+    p = catsub.add_parser("show", help="print one species as JSON")
+    p.add_argument("catalog")
+    p.add_argument("species")
+    p.set_defaults(func=cmd_catalog_show)
+
     creature = sub.add_parser("creature", help="per-creature project files (one Aniimo species each)")
     csub = creature.add_subparsers(dest="creature_command", required=True, metavar="ACTION")
     p = csub.add_parser("init", help="create WORKSPACE/creatures/<id>/creature.json")
     p.add_argument("workspace", help="workspace directory (outside the repository and game folder)")
-    p.add_argument("--id", required=True, help="species id, e.g. aniimo_example")
-    p.add_argument("--name", required=True, help="display name")
+    p.add_argument("--id", help="species id, e.g. aniimo_example (default from catalog)")
+    p.add_argument("--name", help="display name (default from catalog)")
+    p.add_argument("--from-catalog", metavar="CATALOG", help="prefill from a catalog species")
+    p.add_argument("--species", help="catalog species key (see `catalog list`)")
+    p.add_argument("--shiny-probability", type=float, default=0.002, help="per-spawn chance if a shiny variant exists")
+    p.add_argument("--prismana-probability", type=float, default=0.0005,
+                   help="per-spawn chance if a prismana variant exists")
+    p.add_argument("--propose-all", action="store_true",
+                   help="do not auto-confirm associations backed by explicit game-data references")
     p.set_defaults(func=cmd_creature_init)
+    p = csub.add_parser("review", help="list assets and associations awaiting a decision")
+    p.add_argument("file")
+    p.add_argument("--pending", action="store_true", help="only show items needing a decision")
+    p.set_defaults(func=cmd_creature_review)
+    p = csub.add_parser("associate", help="confirm/reject associations or set variants")
+    p.add_argument("file")
+    p.add_argument("--confirm", metavar="I,J,K-L", help="asset indices to confirm")
+    p.add_argument("--reject", metavar="I,J,K-L", help="asset indices to reject")
+    p.add_argument("--variant", action="append", metavar="I=VARIANT", help="set an asset's variant (shared|normal|shiny|prismana)")
+    p.add_argument("--confirm-all", action="store_true", help="confirm every remaining proposed association")
+    p.set_defaults(func=cmd_creature_associate)
+    p = csub.add_parser("extract", help="export confirmed assets with UnityPy into the creature folder")
+    p.add_argument("file")
+    p.add_argument("--root", required=True, help="game install root that the manifest was scanned from")
+    p.add_argument("--include-proposed", action="store_true", help="also export proposed (unreviewed) assets")
+    p.set_defaults(func=cmd_creature_extract)
+    p = csub.add_parser("export-assetripper", help="export the creature's containers with AssetRipper (headless)")
+    p.add_argument("file")
+    p.add_argument("--root", required=True, help="game install root that the manifest was scanned from")
+    p.add_argument("--mode", choices=["primary", "project"], default="primary",
+                   help="primary = GLB/PNG; project = Unity project files incl. .anim clips")
+    p.add_argument("--assetripper", help="path to AssetRipper.GUI.Free (default: config [tools] or PATH)")
+    p.add_argument("--include-proposed", action="store_true")
+    p.add_argument("--replace", action="store_true", help="delete and redo a previous export of this mode")
+    p.set_defaults(func=cmd_creature_assetripper)
     p = csub.add_parser("validate", help="validate a creature.json")
     p.add_argument("file")
     p.set_defaults(func=cmd_creature_validate)
