@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tarfile
@@ -89,6 +90,13 @@ def _safe_target(base: Path, name: str) -> Path:
     return target
 
 
+def _long_path(path: Path) -> str:
+    text = str(Path(path).resolve())
+    if os.name == "nt" and not text.startswith("\\\\?\\"):
+        return "\\\\?\\" + text
+    return text
+
+
 def extract(archive: Path, dest: Path) -> Path:
     """Extract .zip / .tar.* into ``dest``, refusing entries that would land outside it."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -97,7 +105,9 @@ def extract(archive: Path, dest: Path) -> Path:
         with zipfile.ZipFile(archive) as zf:
             for member in zf.infolist():
                 _safe_target(dest, member.filename)
-            zf.extractall(dest)
+            # Windows: extended-length form, so deep archive entries (e.g. Blender's bundled Python test data)
+            # do not hit the 260-character path limit.
+            zf.extractall(_long_path(dest))
             # zipfile drops Unix permissions; restore the executable bits recorded in the archive.
             for member in zf.infolist():
                 mode = (member.external_attr >> 16) & 0o777

@@ -456,3 +456,10 @@ def _creature_list_and_group_chooser(app, layout):
     from aniimo_pal.catalog.rules import load_rules
 
     assert load_rules(ws.catalog_rules).include_name_prefixes == ["p_parmon"]
+
+
+def test_toolkit_requirements_come_from_pyproject():
+    root = Path(__file__).resolve().parents[1]
+    reqs = setup.toolkit_requirements(root)
+    assert {"UnityPy>=1.20", "PyYAML>=6", "numpy>=1.24", "jsonschema>=4"} <= set(reqs)
+    assert not any(r.startswith("pytest") for r in reqs)  # dev extras are not installed for the Studio

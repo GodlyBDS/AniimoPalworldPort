@@ -15,10 +15,12 @@ Every check is read-only. Installers only write inside the Studio folder.
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -84,9 +86,33 @@ def install_python_env(layout: StudioLayout, log: Log, python: str = sys.executa
         log(f"Creating Python environment in {layout.venv} ...")
         _run([python, "-m", "venv", str(layout.venv)], env, log)
     log("Installing the toolkit and its packages (UnityPy, PyYAML, numpy, jsonschema) ...")
+    if os.name == "nt" and len(str(layout.root)) > 60:
+        log(f"Note: this folder's path is long ({len(str(layout.root))} characters). Windows limits paths to 260 "
+            "characters; if an install step fails, move the Studio to a short folder such as C:\\AniimoStudio.")
     _run([str(layout.venv_python), "-m", "pip", "install", "--upgrade", "pip"], env, log)
-    _run([str(layout.venv_python), "-m", "pip", "install", "-e", f"{layout.root}[{PYTHON_PACKAGES_EXTRAS}]"],
-         env, log)
+    # The packages only (no build of the toolkit itself: pip's build folders get too deep for Windows' 260-
+    # character path limit in long install folders). The toolkit is used straight from its src folder.
+    _run([str(layout.venv_python), "-m", "pip", "install", *toolkit_requirements(layout.root)], env, log)
+    link_toolkit_source(layout, env)
+    log(f"Toolkit linked from {layout.root / 'src'}")
+
+
+def toolkit_requirements(root: Path) -> list[str]:
+    """The toolkit's runtime packages for the Studio, read from pyproject.toml (dependencies + Studio extras)."""
+    project = tomllib.loads((Path(root) / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    reqs = list(project.get("dependencies") or [])
+    for extra in PYTHON_PACKAGES_EXTRAS.split(","):
+        reqs += project.get("optional-dependencies", {}).get(extra, [])
+    return sorted(set(reqs))
+
+
+def link_toolkit_source(layout: StudioLayout, env: dict[str, str]) -> Path:
+    """Make the environment import the toolkit from ``<root>/src`` (a .pth file; updates need no reinstall)."""
+    out = subprocess.run([str(layout.venv_python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                         capture_output=True, text=True, env=env, check=True)
+    pth = Path(out.stdout.strip()) / "aniimo_pal_studio.pth"
+    pth.write_text(str((layout.root / "src").resolve()) + "\n", encoding="utf-8")
+    return pth
 
 
 def _run(cmd: list[str], env: dict[str, str], log: Log, cwd: Path | None = None) -> None:

@@ -20,7 +20,7 @@ Everything goes into `studio-data/` inside the Studio folder:
 
 | Item | Location | Source |
 |------|----------|--------|
-| Python environment (toolkit, UnityPy, PyYAML, numpy, jsonschema) | `studio-data/python-env/` | PyPI |
+| Python environment (UnityPy, PyYAML, numpy, jsonschema; the toolkit is used straight from `src/` via a `.pth` file, so updating the files needs no reinstall) | `studio-data/python-env/` | PyPI |
 | AssetRipper | `studio-data/tools/assetripper/` | latest GitHub release (or a release .zip you downloaded: *Install AssetRipper from a downloaded .zip*) |
 | Blender 5.2 LTS (portable) | `studio-data/tools/blender/` | download.blender.org (Windows .zip / Linux .tar.xz). On macOS install Blender yourself and use *Select an installed Blender* |
 | Portable Python (only if needed) | `studio-data/python/` | python-build-standalone |
@@ -33,6 +33,12 @@ pointed into `studio-data/` (TEMP/TMP, pip cache, Blender user folders,
 
 The game folder you select is **only read**. The Studio refuses a game folder
 that overlaps its own data folder.
+
+**Windows: keep the Studio folder path short** (e.g. `C:\AniimoStudio`). Windows
+limits paths to 260 characters; the installer avoids pip's deep build folders
+and unzips Blender with long-path support, but tools inside may still create
+deep paths. A GitHub zip download unpacks into a long folder name
+(`AniimoPalworldPort-claude-…`); rename it.
 
 ## Workflow (tabs)
 
