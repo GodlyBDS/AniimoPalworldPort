@@ -210,6 +210,49 @@ def cmd_config(args: argparse.Namespace, config: Config) -> int:
     return EXIT_OK
 
 
+def cmd_creature_init(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.creature.model import creature_path, new_creature, save_creature
+
+    path = creature_path(args.workspace, args.id)
+    if path.exists():
+        raise ToolkitError(f"creature project already exists: {path} (projects are never overwritten)")
+    save_creature(new_creature(args.id, args.name), path)
+    print(f"created {path}")
+    return EXIT_OK
+
+
+def cmd_creature_validate(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.creature.model import load_creature, validate_creature
+
+    errors = validate_creature(load_creature(args.file))
+    for e in errors:
+        print(f"invalid: {e}")
+    print(f"{len(errors)} error(s)" if errors else "valid")
+    return EXIT_CHECK_FAILED if errors else EXIT_OK
+
+
+def cmd_creature_roll(args: argparse.Namespace, config: Config) -> int:
+    import random
+    from collections import Counter
+
+    from aniimo_pal.creature.model import load_creature, validate_creature
+    from aniimo_pal.creature.variants import roll_variant, variant_probabilities
+
+    data = load_creature(args.file)
+    errors = validate_creature(data)
+    if errors:
+        raise ToolkitError("invalid creature project: " + "; ".join(errors))
+    if args.n < 1:
+        raise ToolkitError("--n must be at least 1")
+    rng = random.Random(args.seed)
+    counts = Counter(roll_variant(data["variants"], rng=rng) for _ in range(args.n))
+    probs = variant_probabilities(data["variants"])
+    print(f"{args.n} simulated spawn events (seed {args.seed}); one individual per event:")
+    for name in ("normal", "shiny", "prismana"):
+        print(f"  {name:<9} {counts[name]:>9}  observed {counts[name] / args.n:.6f}  configured {probs[name]:.6f}")
+    return EXIT_OK
+
+
 # --- parser -----------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -271,6 +314,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("config", help="print the effective configuration as JSON")
     p.set_defaults(func=cmd_config)
+
+    creature = sub.add_parser("creature", help="per-creature project files (one Aniimo species each)")
+    csub = creature.add_subparsers(dest="creature_command", required=True, metavar="ACTION")
+    p = csub.add_parser("init", help="create WORKSPACE/creatures/<id>/creature.json")
+    p.add_argument("workspace", help="workspace directory (outside the repository and game folder)")
+    p.add_argument("--id", required=True, help="species id, e.g. aniimo_example")
+    p.add_argument("--name", required=True, help="display name")
+    p.set_defaults(func=cmd_creature_init)
+    p = csub.add_parser("validate", help="validate a creature.json")
+    p.add_argument("file")
+    p.set_defaults(func=cmd_creature_validate)
+    p = csub.add_parser("roll", help="simulate variant selection to check configured rarity")
+    p.add_argument("file")
+    p.add_argument("--n", type=int, default=100000, help="number of simulated spawn events")
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(func=cmd_creature_roll)
     return parser
 
 

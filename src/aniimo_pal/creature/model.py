@@ -1,0 +1,163 @@
+"""Creature project model (``creature.json``).
+
+A creature project captures everything decided about porting ONE Aniimo
+species, so work can stop and resume, and so finished creatures can be bundled
+into multi-creature mod packs later. It lives in a user workspace outside the
+repository (``<workspace>/creatures/<id>/creature.json``) because it references
+proprietary files.
+
+Assets are referenced by content hash (``sha256``) plus the manifest path, so
+an association survives re-scans and game updates that move files; a changed
+hash means the asset really changed and must be re-confirmed.
+
+Schema version 0.x: fields may still change before the editor milestone.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from aniimo_pal.creature.variants import variant_probabilities
+from aniimo_pal.errors import ToolkitError
+from aniimo_pal.manifest.io import write_json_atomic
+
+SCHEMA_ID = "aniimo-pal/creature"
+SCHEMA_VERSION = "0.1.0"
+
+ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+STATUSES = ("draft", "extracted", "mapped", "converted", "configured", "validated", "exported")
+VARIANTS = ("normal", "shiny", "prismana")
+ASSET_ROLES = ("mesh", "skeleton", "texture", "material", "animation", "icon", "audio", "other")
+ASSOCIATION_STATES = ("proposed", "confirmed", "rejected")
+INTEGRATION_MODES = ("replace", "new_pal")
+
+
+class CreatureError(ToolkitError):
+    """Invalid creature project."""
+
+
+def new_creature(creature_id: str, display_name: str) -> dict[str, Any]:
+    if not ID_RE.match(creature_id):
+        raise CreatureError("creature id must match ^[a-z][a-z0-9_]{2,47}$ (lowercase, digits, underscore)")
+    return {
+        "schema": SCHEMA_ID,
+        "schema_version": SCHEMA_VERSION,
+        "id": creature_id,
+        "display_name": display_name,
+        "status": "draft",
+        "source": {"manifest_sha256": None, "game_version": None},
+        "assets": [],
+        "variants": {
+            "normal": {"enabled": True},
+            "shiny": {"enabled": False, "spawn_probability": 0.0},
+            "prismana": {"enabled": False, "spawn_probability": 0.0},
+        },
+        "integration": {"mode": "replace", "replace_target": None, "notes": ""},
+    }
+
+
+def validate_creature(data: Any) -> list[str]:
+    """Return a list of problems (empty when valid)."""
+    if not isinstance(data, dict):
+        return ["creature project must be a JSON object"]
+    errors: list[str] = []
+    if data.get("schema") != SCHEMA_ID:
+        errors.append(f"schema must be {SCHEMA_ID!r}")
+    if not isinstance(data.get("id"), str) or not ID_RE.match(data["id"]):
+        errors.append("id must match ^[a-z][a-z0-9_]{2,47}$")
+    if not isinstance(data.get("display_name"), str) or not data["display_name"].strip():
+        errors.append("display_name must be a non-empty string")
+    if data.get("status") not in STATUSES:
+        errors.append(f"status must be one of {STATUSES}")
+
+    variants = data.get("variants")
+    if not isinstance(variants, dict) or set(variants) != set(VARIANTS):
+        errors.append(f"variants must contain exactly {VARIANTS}")
+        variants = {}
+    else:
+        if variants["normal"].get("enabled") is not True:
+            errors.append("variants.normal must be enabled (rare variants replace the normal outcome)")
+        for name in ("shiny", "prismana"):
+            v = variants[name]
+            p = v.get("spawn_probability", 0.0)
+            if not isinstance(v.get("enabled"), bool):
+                errors.append(f"variants.{name}.enabled must be a boolean")
+            if isinstance(p, bool) or not isinstance(p, (int, float)) or not 0.0 <= p <= 1.0:
+                errors.append(f"variants.{name}.spawn_probability must be a number in [0, 1]")
+            elif v.get("enabled") and p == 0:
+                errors.append(f"variants.{name} is enabled but spawn_probability is 0")
+            elif v.get("enabled") is False and p != 0:
+                errors.append(f"variants.{name} is disabled but has a non-zero spawn_probability")
+        if not errors:
+            try:
+                variant_probabilities(variants)
+            except ValueError as exc:
+                errors.append(f"variants: {exc}")
+
+    seen: set[tuple[str, str, str]] = set()
+    assets = data.get("assets")
+    if not isinstance(assets, list):
+        errors.append("assets must be a list")
+        assets = []
+    for i, a in enumerate(assets):
+        where = f"assets[{i}]"
+        if not isinstance(a, dict):
+            errors.append(f"{where} must be an object")
+            continue
+        ref = a.get("ref") or {}
+        if not isinstance(ref.get("path"), str) or not ref["path"]:
+            errors.append(f"{where}.ref.path is required")
+        sha = ref.get("sha256")
+        if sha is not None and not (isinstance(sha, str) and SHA256_RE.match(sha)):
+            errors.append(f"{where}.ref.sha256 must be 64 lowercase hex characters")
+        if a.get("role") not in ASSET_ROLES:
+            errors.append(f"{where}.role must be one of {ASSET_ROLES}")
+        variant = a.get("variant", "shared")
+        if variant != "shared" and variant not in VARIANTS:
+            errors.append(f"{where}.variant must be 'shared' or one of {VARIANTS}")
+        elif variant in ("shiny", "prismana") and variants and not variants[variant].get("enabled"):
+            errors.append(f"{where} is assigned to disabled variant {variant!r}")
+        state = a.get("association")
+        if state not in ASSOCIATION_STATES:
+            errors.append(f"{where}.association must be one of {ASSOCIATION_STATES}")
+        elif state == "confirmed" and sha is None:
+            errors.append(f"{where}: confirmed associations must pin ref.sha256")
+        key = (str(ref.get("path")), str(ref.get("object", "")), str(variant))
+        if key in seen:
+            errors.append(f"{where} duplicates an earlier asset reference")
+        seen.add(key)
+
+    integ = data.get("integration") or {}
+    if integ.get("mode") not in INTEGRATION_MODES:
+        errors.append(f"integration.mode must be one of {INTEGRATION_MODES}")
+    elif integ["mode"] == "replace" and data.get("status") in ("configured", "validated", "exported") \
+            and not integ.get("replace_target"):
+        errors.append("integration.replace_target is required once a replace-mode creature is configured")
+    return errors
+
+
+def creature_path(workspace: str | Path, creature_id: str) -> Path:
+    return Path(workspace) / "creatures" / creature_id / "creature.json"
+
+
+def load_creature(path: str | Path) -> dict[str, Any]:
+    p = Path(path)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise CreatureError(f"creature project not found: {p}") from exc
+    except json.JSONDecodeError as exc:
+        raise CreatureError(f"{p} is not valid JSON: {exc}") from exc
+    return data
+
+
+def save_creature(data: dict[str, Any], path: str | Path) -> Path:
+    errors = validate_creature(data)
+    if errors:
+        raise CreatureError("refusing to save invalid creature project: " + "; ".join(errors))
+    return write_json_atomic(data, path)

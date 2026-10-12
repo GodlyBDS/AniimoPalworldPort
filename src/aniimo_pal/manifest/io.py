@@ -33,14 +33,20 @@ def check_output_location(out_path: Path, read_only_roots: list[Path]) -> None:
 
 def write_manifest(manifest: dict[str, Any], out_path: str | Path, *, indent: int = 2,
                    read_only_roots: list[Path] | None = None) -> Path:
-    """Atomically write ``manifest`` as UTF-8 JSON (temp file + rename)."""
+    """Atomically write ``manifest``, refusing locations inside ``read_only_roots``."""
     out = Path(out_path)
     check_output_location(out, read_only_roots or [])
+    return write_json_atomic(manifest, out, indent=indent)
+
+
+def write_json_atomic(data: Any, out_path: str | Path, *, indent: int = 2) -> Path:
+    """Write ``data`` as UTF-8 JSON via temp file + rename (no partial files)."""
+    out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(manifest, fh, indent=indent or None, ensure_ascii=False, sort_keys=False)
+            json.dump(data, fh, indent=indent or None, ensure_ascii=False, sort_keys=False)
             fh.write("\n")
         os.replace(tmp, out)
     except BaseException:
