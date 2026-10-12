@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 from typing import Any
 
 FORMS = ("normal", "prismana")
@@ -62,12 +63,74 @@ DEFAULT_POLICY = {
 }
 
 
+# Cosmetic skins (e.g. Aniimo's gacha skins) are a separate dimension from forms and Shiny palettes: they
+# can change meshes (Irisalis has extra wings) and are not part of the rarity roll. Every skin found in the
+# source data is recorded; which ones the Palworld mod offers is the user's decision (``policy``).
+SKIN_POLICIES = ("base_only", "all", "selected")
+SKIN_KEYS = {"id", "name", "source", "provenance", "meshes", "materials", "prefabs", "enabled", "notes"}
+
+
+def new_skins() -> dict[str, Any]:
+    # policy None = not decided yet: no skin is exported until the user chooses.
+    return {"policy": None, "entries": []}
+
+
+def enabled_skins(variants: dict[str, Any]) -> list[dict[str, Any]]:
+    """Skins the Palworld mod should offer under the chosen policy (none while undecided)."""
+    skins = variants.get("skins") or {}
+    entries = skins.get("entries") or []
+    policy = skins.get("policy")
+    if policy == "all":
+        return list(entries)
+    if policy == "selected":
+        return [s for s in entries if s.get("enabled")]
+    return []
+
+
+def _validate_skins(skins: Any) -> list[str]:
+    if skins is None:
+        return []
+    if not isinstance(skins, dict):
+        return ["variants.skins must be an object"]
+    errors = []
+    if skins.get("policy") not in (None, *SKIN_POLICIES):
+        errors.append(f"variants.skins.policy must be null (undecided) or one of {SKIN_POLICIES}")
+    entries = skins.get("entries", [])
+    if not isinstance(entries, list):
+        return errors + ["variants.skins.entries must be a list"]
+    seen = set()
+    for i, s in enumerate(entries):
+        where = f"variants.skins.entries[{i}]"
+        if not isinstance(s, dict) or not isinstance(s.get("id"), str) or not re.match(r"^[a-z0-9_]+$", s["id"]):
+            errors.append(f"{where}.id must be a lowercase identifier")
+            continue
+        if s["id"] in seen:
+            errors.append(f"{where}: duplicate skin id {s['id']!r}")
+        seen.add(s["id"])
+        if set(s) - SKIN_KEYS:
+            errors.append(f"{where}: unknown keys {sorted(set(s) - SKIN_KEYS)}")
+        if not isinstance(s.get("name"), str) or not s["name"].strip():
+            errors.append(f"{where}.name must be a non-empty string")
+        if s.get("provenance") not in ("verified", "inferred", "user"):
+            errors.append(f"{where}.provenance must be verified, inferred or user")
+        if not isinstance(s.get("enabled", False), bool):
+            errors.append(f"{where}.enabled must be a boolean")
+        for key in ("meshes", "materials", "prefabs"):
+            v = s.get(key, [])
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                errors.append(f"{where}.{key} must be a list of strings")
+        if skins.get("policy") == "base_only" and s.get("enabled"):
+            errors.append(f"{where}: enabled, but the policy is base_only")
+    return errors
+
+
 def new_variants() -> dict[str, Any]:
     return {
         # Regional forms: verified source data only; biomes are target-game biome ids.
         "regions": {"forms": [], "inheritance": None},
         "forms": {"normal": {"enabled": True}, "prismana": {"enabled": False}},
         "shiny": {"enabled": False, "appearances": []},
+        "skins": new_skins(),
         "rarity": {
             "wild": {"prismana_probability": 0.0, "shiny_probability": 0.0},
             "egg": {"prismana_probability": 0.0, "shiny_probability": 0.0},
@@ -232,6 +295,7 @@ def validate_variants(variants: Any) -> list[str]:
         errors.append("variants.shiny is enabled but has no appearances")
 
     errors.extend(_validate_regions(variants.get("regions"), ids))
+    errors.extend(_validate_skins(variants.get("skins")))
 
     rarity = variants.get("rarity")
     if not isinstance(rarity, dict):
@@ -308,6 +372,10 @@ def rarity_warnings(variants: dict[str, Any]) -> list[str]:
                             "per species. Verify against the source data")
         if len({float(a.get('weight', 1.0)) for a in shiny["appearances"]}) > 1:
             warnings.append("Shiny appearance weights are unequal (default is equal probability)")
+    skins = variants.get("skins") or {}
+    if skins.get("entries") and skins.get("policy") is None:
+        warnings.append(f"{len(skins['entries'])} skin(s) recorded; decide which ones the Palworld mod offers "
+                        "(variants.skins.policy: base_only, all or selected)")
     if variants["rarity"].get("allow_guaranteed"):
         warnings.append("allow_guaranteed is on: guaranteed rare outcomes are possible")
     pity = variants["rarity"].get("pity")

@@ -576,6 +576,53 @@ def cmd_creature_validate(args: argparse.Namespace, config: Config) -> int:
     return EXIT_CHECK_FAILED if errors else EXIT_OK
 
 
+def cmd_creature_skins(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.creature.model import load_creature, save_creature
+    from aniimo_pal.creature.variants import enabled_skins, new_skins
+
+    path = Path(args.file)
+    c = load_creature(path)
+    skins = c["variants"].setdefault("skins", new_skins())
+    by_id = {s["id"]: s for s in skins["entries"]}
+    changed = False
+    if args.add:
+        sid, name = args.add
+        if sid in by_id:
+            raise ToolkitError(f"skin {sid!r} already recorded")
+        entry = {"id": sid, "name": name, "provenance": "user", "enabled": False, "meshes": list(args.mesh)}
+        if args.source:
+            entry["source"] = args.source
+        skins["entries"].append(entry)
+        by_id[sid] = entry
+        changed = True
+    if args.remove:
+        if args.remove not in by_id:
+            raise ToolkitError(f"no skin {args.remove!r}")
+        skins["entries"] = [s for s in skins["entries"] if s["id"] != args.remove]
+        by_id.pop(args.remove)
+        changed = True
+    if args.policy:
+        skins["policy"] = None if args.policy == "undecided" else args.policy
+        changed = True
+    for sid, flag in [(s, True) for s in args.enable] + [(s, False) for s in args.disable]:
+        if sid not in by_id:
+            raise ToolkitError(f"no skin {sid!r}")
+        by_id[sid]["enabled"] = flag
+        changed = True
+    if changed:
+        save_creature(c, path)  # validates (e.g. no enabled skin under base_only)
+    offered = {s["id"] for s in enabled_skins(c["variants"])}
+    print(f"skins policy: {skins['policy'] or 'undecided (nothing exported yet)'}")
+    for s in skins["entries"]:
+        mark = "offered" if s["id"] in offered else "not offered"
+        extra = f", source {s['source']}" if s.get("source") else ""
+        meshes = f", meshes {', '.join(s['meshes'])}" if s.get("meshes") else ""
+        print(f"  {s['id']:<20} {s['name']:<24} {mark} ({s['provenance']}{extra}{meshes})")
+    if not skins["entries"]:
+        print("  no skins recorded")
+    return EXIT_OK
+
+
 def cmd_creature_roll(args: argparse.Namespace, config: Config) -> int:
     import random
     from collections import Counter
@@ -791,6 +838,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n", type=int, default=100000, help="number of simulated spawn events")
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(func=cmd_creature_roll)
+    p = csub.add_parser("skins", help="list/record cosmetic skins and choose which ones the Palworld mod offers")
+    p.add_argument("file")
+    p.add_argument("--add", nargs=2, metavar=("ID", "NAME"), help="record a skin (provenance: user)")
+    p.add_argument("--source", help="where the skin comes from in Aniimo, e.g. gacha, event, default")
+    p.add_argument("--mesh", action="append", default=[], help="mesh name used by the skin (repeatable)")
+    p.add_argument("--remove", metavar="ID")
+    p.add_argument("--policy", choices=["base_only", "all", "selected", "undecided"])
+    p.add_argument("--enable", action="append", default=[], metavar="ID", help="offer this skin (policy selected)")
+    p.add_argument("--disable", action="append", default=[], metavar="ID")
+    p.set_defaults(func=cmd_creature_skins)
     return parser
 
 

@@ -79,6 +79,7 @@ aniimo-pal creature convert ws/creatures/aniimo_foxlet/creature.json --blender "
 | `inventory` | Unity object index (`objects.json`) via UnityPy; fast targeted mode, `--workers`, resumable cache |
 | `catalog build / list / show` | Creature catalog with automatic asset association |
 | `creature init / review / associate / validate / roll` | Resumable per-creature projects; exact wild/egg odds per regional form (`roll --biome`) |
+| `creature skins` | Record cosmetic (gacha) skins and choose which ones the Palworld mod offers (base only / all / selected) |
 | `creature extract` | UnityPy export of confirmed assets (source hashes re-checked) |
 | `creature export-assetripper` | Headless AssetRipper export, mapped back to the creature's assets |
 | `objects` | Search the object index, e.g. for stat, element or job data tables |

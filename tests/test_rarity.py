@@ -163,3 +163,43 @@ def test_regional_restrictions_change_exact_odds():
     desert = outcome_probabilities(v, "wild", "desert")
     assert desert["any_prismana"] == 0.0 and desert["prismana_shiny"] == 0.0
     assert {roll_individual(v, region="desert", draws=(0.0, 0.5, 0.0))["form"]} == {"normal"}
+
+
+def test_skins_are_recorded_and_offered_only_by_explicit_policy(tmp_path, capsys):
+    import json
+
+    from aniimo_pal.cli import EXIT_OK, main
+    from aniimo_pal.creature.model import creature_path, save_creature
+    from aniimo_pal.creature.variants import enabled_skins, rarity_warnings
+
+    c = new_creature("aniimo_irisalis", "Irisalis")
+    assert c["variants"]["skins"] == {"policy": None, "entries": []}
+    path = save_creature(c, creature_path(tmp_path, c["id"]))
+    for sid, name in (("starwing", "Starwing"), ("lunar_gala", "Lunar Gala")):
+        assert main(["creature", "skins", str(path), "--add", sid, name, "--source", "gacha",
+                     "--mesh", "M_Parmon_10213_Wing02"]) == EXIT_OK
+    data = json.loads(path.read_text())
+    skins = data["variants"]["skins"]
+    assert [s["provenance"] for s in skins["entries"]] == ["user", "user"] and skins["policy"] is None
+    assert enabled_skins(data["variants"]) == []  # undecided: nothing is exported
+    assert any("decide which ones the Palworld mod offers" in w for w in rarity_warnings(data["variants"]))
+    assert main(["creature", "skins", str(path), "--policy", "selected", "--enable", "starwing"]) == EXIT_OK
+    data = json.loads(path.read_text())
+    assert [s["id"] for s in enabled_skins(data["variants"])] == ["starwing"]
+    assert "starwing" in capsys.readouterr().out
+    # base_only with an enabled skin is contradictory and refused
+    assert main(["creature", "skins", str(path), "--policy", "base_only"]) == 2
+    assert main(["creature", "skins", str(path), "--disable", "starwing"]) == EXIT_OK
+    assert main(["creature", "skins", str(path), "--policy", "base_only"]) == EXIT_OK
+    assert main(["creature", "skins", str(path), "--policy", "all"]) == EXIT_OK
+    assert len(enabled_skins(json.loads(path.read_text())["variants"])) == 2
+
+
+def test_skin_validation_errors():
+    c = new_creature("aniimo_test", "Test")
+    c["variants"]["skins"] = {"policy": "some", "entries": [{"id": "Bad Id", "name": ""},
+                                                            {"id": "ok", "name": "Ok", "provenance": "guess"}]}
+    errors = " | ".join(validate_creature(c))
+    assert "policy must be null" in errors and "lowercase identifier" in errors and "provenance" in errors
+    del c["variants"]["skins"]  # projects made before skins existed stay valid
+    assert validate_creature(c) == []

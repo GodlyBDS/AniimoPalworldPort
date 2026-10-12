@@ -216,6 +216,27 @@ for the in-game implementation.
   Palworld biome ids and spawner placement (milestone 6), and the editor panel
   (milestone 9).
 
+### 6.4b Cosmetic skins (gacha skins) and special palettes
+
+Aniimo also has cosmetic **skins** (a gacha system). Unlike Shiny looks (colour
+palettes only, same mesh) a skin can change the model: Irisalis's skins add
+wings. Skins are therefore a separate dimension, **not part of the rarity
+roll**:
+
+* `variants.skins.entries[]`: every skin found in the source data or entered by
+  the user (`id`, `name`, `source` e.g. gacha/event, `meshes`, `materials`,
+  `prefabs`, `provenance`, `enabled`). Nothing is invented.
+* `variants.skins.policy`: the user's decision per creature: `base_only`,
+  `all`, or `selected` (only entries with `enabled: true`, e.g. the four special
+  skins). `null` means undecided: no skin is exported and validation warns.
+* How a skin is obtained in Palworld (cosmetic choice, separate Pal, spawn
+  variant) is decided with spawning (milestone 6).
+* `aniimo-pal creature skins FILE` lists and edits them.
+
+Umbral (galaxy-purple palette, a 13th look besides the 12 Shiny palettes) and
+Dazzling/Shadow are recorded in `data/systems/aniimo.toml` as user-provided
+facts; their rarity rules are pending (see the open questions there).
+
 ### 6.5 Override layering
 Stats and combat resolve as: base → regional-form overrides → Prismana
 overrides → Shiny overrides, each needing `verified` or `user` provenance.
