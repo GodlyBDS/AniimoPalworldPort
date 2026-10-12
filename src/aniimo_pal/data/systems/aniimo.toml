@@ -18,6 +18,22 @@ sources = [
   "https://www.hideoutgacha.com/games/aniimo/training-guide",
 ]
 
+# Rare appearances as described by the user (provenance: user). Not yet located in game data: the real
+# installs seen so far hold only a few numbered materials per creature (e.g. MI_Parmon_10181_Body_01a..05a),
+# so the palettes are probably applied at runtime (colour data / palette textures). Appearances must only
+# be enabled for palettes found in the source data; none are invented.
+[appearance]
+provenance = "user"
+changes_model = false           # Shiny looks are colour palettes only: same mesh, same form
+shiny_per_creature = 12         # user: every Aniimo has 12 Shiny looks
+named = ["dazzling", "shadow", "umbral"]  # umbral = galaxy-purple palette; how these relate to the 12 is open
+open_questions = [
+  "Are Dazzling and Shadow part of the 12, or extra (12 numbered + 2)?",
+  "Is Umbral one of the 12 or separate?",
+  "Do Dazzling/Shadow add a visual effect (glow, aura) beyond colour?",
+  "Where does the game store the palettes (data table, palette texture, shader parameters)?",
+]
+
 # Canonical ids (lowercase) with display names and aliases seen in guides.
 [elements]
 fire = { name = "Fire" }
