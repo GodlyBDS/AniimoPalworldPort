@@ -50,7 +50,8 @@ src/aniimo_pal/
   catalog/                ✅ M3: dependency graph -> species, variants, skeleton, animations, evidence
   creature/               ✅ creature.json model, workflow (from catalog, review, associate), variants, combat schema
   extract.py              ✅ M2: UnityPy export (PNG/OBJ/JSON) + AssetRipper export mapped back to assets
-  convert/                ⬜ M4: Blender scripts (GLB->FBX, axis/scale, bone rename/retarget, .anim->FBX animation)
+  convert/                🟡 M4: .anim parser, skin assembly, Blender job (rigged FBX + retargeted clips) ✅;
+                             materials/textures in FBX, Palworld-skeleton retarget, blend shapes ⬜
   unreal/                 ⬜ M5: UE 5.1 Python import script(s), run inside the editor
   modkit/                 ⬜ M5/M6: Palworld mod scaffold, PalSchema JSON, packaging metadata
   combat/                 ⬜ M7: combat discovery + translation templates (schema already reserved)
@@ -408,3 +409,46 @@ confirmed from data first (see 10.4).
   self-resistance; Palworld uses 2×/0.5× plus a 20 % same-element bonus. Wind
   and Light have no Palworld element; Neutral and Dragon have no Aniimo
   element.
+
+## 11. Conversion pipeline (milestone 4)
+
+`aniimo-pal creature convert` turns a creature's confirmed assets into a rigged
+FBX for Unreal Engine 5.1. Each step writes inspectable files under
+`<creature>/convert/`.
+
+1. **Clips:** AssetRipper's Unity-project export rebuilds editor curves from a
+   build's compiled clips as `.anim` YAML. `convert/unity_anim.py` parses them
+   into `aniimo-pal/clip` JSON in **Unity local space** (positions, quaternions,
+   euler and scale keys with Hermite tangents, float curves, events). It has a
+   reference evaluator.
+2. **Skin assembly** (`convert/skin_assembly.py`): AssetRipper does not export
+   skinned prefabs as rigs (research §1). The mesh GLB (weights, no skin) is
+   combined with the catalog skeleton (`skeleton.bones` local TRS), the
+   renderer's joint order (`skeleton.skins[].bones`, i.e. `m_Bones`) and the
+   mesh's real bind poses (`*.skin.json` from the UnityPy extract). Joints and
+   inverse bind matrices use AssetRipper's coordinate conversion, so the mesh
+   and rig line up.
+3. **Blender job** (`convert/blender_scripts/convert_model.py`, standalone):
+   - imports the rigged glTF;
+   - fits the Unity→armature basis from rest-pose bone positions (the expected
+     AssetRipper basis first, a least-squares fit as fallback; residual
+     reported);
+   - retargets each clip with P = A·U_anim·U_rest⁻¹·A⁻¹·B_rest, which does not
+     depend on how the importer orients bones;
+   - exports FBX with UE-oriented settings: unit scale to centimetres, no leaf
+     bones, armature named `Armature`, every action as its own take, no
+     keyframe simplification;
+   - writes a report: skinning coverage, bounds sanity check, per-clip error,
+     warnings.
+
+Verification so far (all on synthetic data):
+- FBX export + re-import reproduces animated bone positions computed
+  independently in Unity space (≤ 0.1 mm).
+- Rigged vertices sit on their bones.
+- The whole CLI chain runs against a real AssetRipper build.
+
+Not covered yet: real Aniimo meshes (multiple skinned meshes per prefab,
+compressed or streamed vertex data, blend shapes, LODs), materials and textures
+inside the FBX, retargeting onto a Palworld skeleton (replace mode), and Unreal
+import.
+

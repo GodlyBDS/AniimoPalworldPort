@@ -18,8 +18,21 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
-        run: python -m pip install -e ".[dev,unitypy]" ruff
+        run: python -m pip install -e ".[dev,unitypy,convert]" ruff
       - name: Lint
         run: ruff check src tests
       - name: Test
         run: python -m pytest
+
+  blender:
+    # Conversion tests need Blender's Python module (bpy wheels exist for specific Python versions).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install -e ".[dev,unitypy,convert]" "bpy==5.2.*"
+      - name: Conversion tests
+        run: python -m pytest tests/test_convert.py tests/test_skin_assembly.py tests/test_convert_pipeline.py

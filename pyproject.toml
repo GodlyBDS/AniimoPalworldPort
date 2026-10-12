@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aniimo-palworld-toolkit"
-version = "0.3.0"
+version = "0.4.0"
 description = "Read-only asset inventory and conversion-pipeline scaffolding for moving legally usable Unity assets into Palworld (UE 5.1) mods."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +15,9 @@ dependencies = []
 # Optional third-party parsers/validators. The core scanner has no runtime dependencies.
 unitypy = ["UnityPy>=1.20"]
 validate = ["jsonschema>=4"]
-dev = ["pytest>=7", "jsonschema>=4"]
+# Conversion stage: .anim parsing and skin assembly (Blender itself is a separate install).
+convert = ["PyYAML>=6", "numpy>=1.24"]
+dev = ["pytest>=7", "jsonschema>=4", "PyYAML>=6", "numpy>=1.24"]
 
 [project.scripts]
 aniimo-pal = "aniimo_pal.cli:main"
@@ -24,7 +26,7 @@ aniimo-pal = "aniimo_pal.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aniimo_pal = ["schemas/*.json", "data/systems/*.toml"]
+aniimo_pal = ["schemas/*.json", "data/systems/*.toml", "convert/blender_scripts/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

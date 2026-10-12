@@ -33,6 +33,7 @@ SCHEMA_VERSION = "0.1.0"
 RENDERER_CLASSES = ("SkinnedMeshRenderer",)
 STATIC_RENDERER_CLASSES = ("MeshRenderer",)
 TRANSFORM_CLASSES = ("Transform", "RectTransform")
+_BONE_FIELD = re.compile(r"^m_Bones\[(\d+)\]$")
 
 
 def path_hash(path: str) -> int:
@@ -119,6 +120,7 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
         return None
 
     meshes: dict[str, dict[str, Any]] = {}
+    skins: list[dict[str, Any]] = []
     materials: list[dict[str, Any]] = []
     bones: dict[str, str] = {}
     for go, r in renderers:
@@ -134,6 +136,18 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
         for b in idx.refs(r, "m_Bones"):
             if b["id"] in path_of_transform:
                 bones[b["id"]] = path_of_transform[b["id"]]
+        if r["class"] == "SkinnedMeshRenderer" and mesh is not None:
+            # Joint order matters: mesh blend indices refer to positions in m_Bones.
+            ordered: dict[int, str | None] = {}
+            for ref in r["refs"]:
+                m = _BONE_FIELD.match(ref["field"])
+                if m:
+                    ordered[int(m.group(1))] = path_of_transform.get(ref["target"])
+            root_bone = idx.ref(r, "m_RootBone")
+            skins.append({"renderer": r["id"], "mesh": mesh["id"], "mesh_name": mesh.get("name"),
+                          "renderer_path": path_of_transform.get((h.go_transform.get(go["id"]) or {}).get("id")),
+                          "bones": [ordered.get(i) for i in range(max(ordered) + 1)] if ordered else [],
+                          "root_bone": path_of_transform.get(root_bone["id"]) if root_bone else None})
     if not meshes:
         return None
 
@@ -161,7 +175,7 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
     return {
         "root": root, "nodes": nodes, "meshes": list(meshes.values()), "materials": materials,
         "bone_paths": sorted(set(bones.values())), "skeleton_paths": skeleton_paths,
-        "controllers": controllers, "avatars": avatars, "clips": clips, "local_trs": local_trs,
+        "controllers": controllers, "avatars": avatars, "clips": clips, "local_trs": local_trs, "skins": skins,
     }
 
 
@@ -376,6 +390,8 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
         "bones": [{"path": p, "name": p.rsplit("/", 1)[-1], "parent": p.rsplit("/", 1)[0] if "/" in p else None,
                    "skinned": p in bone_paths, "local": local_trs.get(p)} for p in skel_paths],
         "avatar": base_cand["avatars"][0]["id"] if base_cand["avatars"] else None,
+        # Per skinned renderer: mesh + ordered joint paths (blend indices refer to this order).
+        "skins": base_cand["skins"],
     }
     for p in prefabs:
         if p is not base and p["_cand"]["bone_paths"] != base_cand["bone_paths"]:

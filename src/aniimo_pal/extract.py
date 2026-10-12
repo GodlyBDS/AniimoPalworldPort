@@ -189,6 +189,14 @@ def _export_one(reader, asset: dict[str, Any], out_root: Path, unique, texture_f
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="") as fh:
             fh.write(mesh.export())
+        # Skinning data needed to rig the mesh later (bind poses are Unity row/column e<row><col>).
+        d = reader.parse_as_dict(check_read=False)
+        bindposes = [[[float(m[f"e{r}{c}"]) for c in range(4)] for r in range(4)] for m in d.get("m_BindPose") or []]
+        if bindposes:
+            write_json_atomic({"mesh": d.get("m_Name"), "space": "unity", "bind_poses": bindposes,
+                               "bone_name_hashes": [int(h) for h in d.get("m_BoneNameHashes") or []],
+                               "root_bone_name_hash": d.get("m_RootBoneNameHash"), "provenance": "verified"},
+                              out_root / (rel[:-4] + ".skin.json"))
         return rel
     if role == "material":
         d = reader.parse_as_dict(check_read=False)

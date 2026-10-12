@@ -362,6 +362,29 @@ def cmd_creature_assetripper(args: argparse.Namespace, config: Config) -> int:
     return EXIT_OK
 
 
+def cmd_creature_convert(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.convert.pipeline import convert_creature
+    from aniimo_pal.creature.model import load_creature, save_creature
+
+    path = Path(args.file)
+    c = load_creature(path)
+    bone_map = _read_json(args.bone_map) if args.bone_map else None
+    blender = args.blender or config.tools.blender or None
+    report = convert_creature(c, path.parent, blender=blender, bone_map=bone_map,
+                              include_proposed=args.include_proposed)
+    save_creature(c, path)
+    s = report["summary"]
+    print(f"converted meshes {s['meshes_ok']}, clips {s['clips']}, errors {s['errors']} -> {path.parent / 'convert'}")
+    for m in report["meshes"]:
+        if m["status"] != "ok":
+            print(f"  {m['status'].upper()} {m['mesh']}: {m.get('error')}")
+        else:
+            print(f"  ok {m['mesh']}: {m['fbx']} ({len(m['clips'])} clips)")
+    for e in report["clip_errors"]:
+        print(f"  clip error {e['name']}: {e['error']}")
+    return EXIT_OK if s["errors"] == 0 else EXIT_CHECK_FAILED
+
+
 def cmd_inventory(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.inventory import build_inventory
     from aniimo_pal.manifest.io import check_output_location, read_manifest, write_json_atomic
@@ -645,6 +668,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-proposed", action="store_true")
     p.add_argument("--replace", action="store_true", help="delete and redo a previous export of this mode")
     p.set_defaults(func=cmd_creature_assetripper)
+    p = csub.add_parser("convert", help="build rigged FBX (with retargeted clips) for Unreal Engine 5.1 via Blender")
+    p.add_argument("file")
+    p.add_argument("--blender", help="Blender executable (default: config [tools].blender, else the bpy module)")
+    p.add_argument("--bone-map", metavar="JSON", help="rename bones: {\"old\": \"new\"}")
+    p.add_argument("--include-proposed", action="store_true")
+    p.set_defaults(func=cmd_creature_convert)
     p = csub.add_parser("validate", help="validate a creature.json")
     p.add_argument("file")
     p.add_argument("--source-system", metavar="TOML", help="Aniimo system definition (default: bundled, unverified)")

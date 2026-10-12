@@ -9,7 +9,7 @@
 | 2 | Tool adapters: UnityPy object inventory, AssetRipper headless export, UnityPy extraction (PNG/OBJ/JSON) | **Done** (synthetic data; real AssetRipper build exercised) |
 | 3 | Creature catalog + association engine (dependency graph, variants, skeleton, animation linking, evidence/provenance, review/confirm workflow, reusable rules) | **Done** (synthetic data) |
 | 3b | **Identity model** (species, stage, regional form, Normal/Prismana, standard/12 Shiny) with independent form + Shiny rolls, wild/egg rarity, computed Prismana-Shiny odds, biome-driven regional forms (creature schema 0.3.0, auto-migration) | **Done** (reference semantics + validation; regional detection from real data pending) |
-| 4 | Conversion via Blender: GLB→FBX, axis/scale, skin check, bone rename/retarget, Unity `.anim`→FBX animation, texture/material maps; first editor (Blender add-on) | Next |
+| 4 | Conversion via Blender: GLB→FBX, axis/scale, skin check, bone rename/retarget, Unity `.anim`→FBX animation, texture/material maps; first editor (Blender add-on) | **In progress**. Done: `.anim` parsing, skin assembly (works around AssetRipper's missing skinned-prefab export), Blender job with verified clip retargeting, `creature convert`. Next: materials/textures in the FBX, Palworld-skeleton retarget for replace mode, blend shapes/LODs, Blender add-on editor |
 | 5 | UE 5.1 Python import script + Palworld mod scaffold; **replace mode** for one test creature | Planned |
 | 6 | **New-Pal mode**: data rows (PalSchema), biome spawners for regional forms, form/appearance identity persistence (capture, storage, save/load, breeding inheritance), in-game rarity matching the reference roller | Planned, needs research |
 | 7 | **Combat translation + in-game testing**: combat discovery (events, controller states, skill data), reusable combat templates, **Ultimate → Partner Skill** framework, AI usage rules, combat validation | Planned, starts with a research spike (architecture §9) |
@@ -45,6 +45,10 @@ animation events) without migrations.
 | Independent form/Shiny rolls, exact combined odds, wild vs egg contexts, equal-weight appearances, regional restrictions, biome → regional form, no extra copies, policy errors/warnings, 0.1/0.2 → 0.3 migration | `tests/test_rarity.py`, `tests/test_creature.py` |
 | Catalog detects Prismana and Shiny independently (Prismana Shiny prefabs), numbers Shiny appearances, scopes assets by form/appearance | `tests/test_catalog.py` |
 | Combat section schema (multi-phase abilities, Ultimate → Partner Skill default, provenance) | `tests/test_creature.py` |
+| `.anim` parsing of real AssetRipper output; Hermite evaluation | `tests/test_convert.py` (fixture produced by real AssetRipper from a synthetic compiled clip) |
+| Skin assembly: joint order, glTF conversion, inverse bind matrices, bind-pose source, vertices on bones | `tests/test_skin_assembly.py` |
+| Clip retargeting through FBX export + re-import matches Unity-space math (≤ 0.1 mm) | `tests/test_convert.py` (bpy 5.2.2) |
+| Full chain scan → inventory → catalog → creature → extract → AssetRipper (primary + project) → convert | `tests/test_convert_pipeline.py` with `ASSETRIPPER_PATH` (real build) |
 | Stats/elements/work schema: vocabulary checks against system definitions, unmapped elements handled explicitly, work-level ranges, variant inheritance and overrides, rarity/combat kept out | `tests/test_profile.py` |
 | TextAsset description + `objects` search (data-table discovery) | `tests/test_inventory.py` |
 
@@ -57,8 +61,9 @@ animation events) without migrations.
   weights), real animation curves, compressed or streamed textures (the
   synthetic textures are uncompressed RGBA32), and very large installs
   (performance).
-- Blender conversion, Unreal import, cooking, packaging, UE4SS/PalSchema and
-  in-game behaviour: **nothing has been run.**
+- Blender conversion runs with the `bpy` module on synthetic data. A standalone
+  Blender install and real Aniimo meshes are untested. Unreal import, cooking,
+  packaging, UE4SS/PalSchema and in-game behaviour: **nothing has been run.**
 - Palworld facts behind new Pals, spawning, save persistence and combat (see
   `architecture.md` §6 and §9.4).
 - Both games' stat, element and work systems. The bundled system definitions
@@ -73,7 +78,7 @@ animation events) without migrations.
 | Rights to use specific Aniimo assets | Any public release of ported creatures | Rights holder / user |
 | Aniimo install for local scanning | Real-data tuning of inventory/catalog rules | User, locally |
 | Encrypted or custom containers (if found) | Extraction of those files. **The toolkit will not bypass them** | Rights holder |
-| Blender 3.6+/4.x on the user's machine | Milestone 4 | User |
+| Blender (4.x/5.x) on the user's machine, or `pip install bpy` on a matching Python | Running `creature convert` locally | User |
 | Windows + UE 5.1 + PalworldModdingKit toolchain | Milestones 5–7 | User |
 | Palworld + Palworld RE-UE4SS + PalSchema | In-game testing (M5–M7) | User |
 

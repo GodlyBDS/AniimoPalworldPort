@@ -199,6 +199,65 @@ def add_triangle_mesh(b: SerializedBuilder, name: str, bone_paths: list[str]) ->
                              for _ in bone_paths])
 
 
+def _unity_trs(pos, rot):
+    import numpy as np
+
+    x, y, z, w = rot
+    m = np.eye(4)
+    m[:3, :3] = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                          [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                          [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    m[:3, 3] = pos
+    return m
+
+
+def bone_world_matrices(bone_locals: dict[str, tuple]) -> dict:
+    out = {}
+    for p in sorted(bone_locals, key=lambda p: p.count("/")):
+        m = _unity_trs(*bone_locals[p])
+        parent = p.rsplit("/", 1)[0] if "/" in p else None
+        out[p] = out[parent] @ m if parent else m
+    return out
+
+
+def add_skinned_mesh(b: SerializedBuilder, name: str, bone_paths: list[str], bone_locals: dict[str, tuple]) -> int:
+    """A mesh with one small quad per bone, fully weighted to that bone, plus correct bind poses.
+
+    Vertex layout (stream 0, interleaved): position float3 | blend weights float4 | blend indices uint32x4.
+    """
+    import numpy as np
+
+    world = bone_world_matrices(bone_locals)
+    verts, idx = bytearray(), []
+    for j, p in enumerate(bone_paths):
+        c = world[p][:3, 3]
+        base = len(idx) // 6 * 4
+        for dx, dz in ((-0.02, -0.02), (0.02, -0.02), (0.02, 0.02), (-0.02, 0.02)):
+            verts += struct.pack("<3f", c[0] + dx, c[1], c[2] + dz)
+            verts += struct.pack("<4f", 1.0, 0.0, 0.0, 0.0)
+            verts += struct.pack("<4I", j, 0, 0, 0)
+        idx += [base, base + 1, base + 2, base, base + 2, base + 3]
+    n_verts = 4 * len(bone_paths)
+    mesh_node = b.node(43)
+    vdata = default_value(next(c for c in mesh_node.m_Children if c.m_Name == "m_VertexData"))
+    channels = [{"stream": 0, "offset": 0, "format": 0, "dimension": 0} for _ in range(14)]
+    channels[0] = {"stream": 0, "offset": 0, "format": 0, "dimension": 3}    # position
+    channels[12] = {"stream": 0, "offset": 12, "format": 0, "dimension": 4}  # blend weights (float)
+    channels[13] = {"stream": 0, "offset": 28, "format": 10, "dimension": 4}  # blend indices (uint32)
+    vdata.update(m_VertexCount=n_verts, m_Channels=channels, m_DataSize=bytes(verts))
+    submesh_node = next(c for c in mesh_node.m_Children if c.m_Name == "m_SubMeshes").m_Children[0].m_Children[1]
+    sub = default_value(submesh_node)
+    sub.update(firstByte=0, indexCount=len(idx), topology=0, baseVertex=0, firstVertex=0, vertexCount=n_verts)
+    bindposes = []
+    for p in bone_paths:
+        inv = np.linalg.inv(world[p])
+        bindposes.append({f"e{r}{c}": float(inv[r, c]) for r in range(4) for c in range(4)})
+    return b.add(43, m_Name=name, m_SubMeshes=[sub], m_IndexFormat=0,
+                 m_IndexBuffer=list(struct.pack(f"<{len(idx)}H", *idx)), m_VertexData=vdata,
+                 m_BoneNameHashes=[crc(p) for p in bone_paths], m_RootBoneNameHash=crc(bone_paths[0]),
+                 m_BindPose=bindposes)
+
+
 def add_clip(b: SerializedBuilder, name: str, bound_paths: list[str], events: list[tuple[float, str]] = ()) -> int:
     clip_node = b.node(74)
     binding = default_value(next(c for c in clip_node.m_Children if c.m_Name == "m_ClipBindingConstant"))
@@ -223,7 +282,8 @@ class CreatureIds:
 def add_creature(b: SerializedBuilder, name: str, *, bones: list[str], clips: list[str],
                  variants: dict[str, tuple[int, int, int]] | None = None, mesh: int | None = None,
                  with_controller: bool = True, rgb=(200, 120, 40),
-                 extra_textures: dict[str, dict] | None = None) -> dict[str, CreatureIds]:
+                 extra_textures: dict[str, dict] | None = None,
+                 bone_locals: dict[str, tuple] | None = None) -> dict[str, CreatureIds]:
     """Add a skinned creature prefab (and optional colour variants sharing the mesh).
 
     Hierarchy: <name> (Animator) -> <name>_Body (SkinnedMeshRenderer) and a bone chain
@@ -232,7 +292,8 @@ def add_creature(b: SerializedBuilder, name: str, *, bones: list[str], clips: li
     controller but use their own material and texture.
     """
     if mesh is None:
-        mesh = add_triangle_mesh(b, f"{name}_Body", bones)
+        mesh = (add_skinned_mesh(b, f"{name}_Body", bones, bone_locals) if bone_locals
+                else add_triangle_mesh(b, f"{name}_Body", bones))
     clip_ids = [add_clip(b, f"{name}_{clip}", bones, events=[(0.25, "OnHit"), (0.5, "PlayVfx")]
                          if "attack" in clip.lower() or "ult" in clip.lower() else ()) for clip in clips]
     controller = b.add(91, m_Name=f"{name}_Controller", m_AnimationClips=[pptr(c) for c in clip_ids]) \
@@ -251,7 +312,8 @@ def add_creature(b: SerializedBuilder, name: str, *, bones: list[str], clips: li
                          m_Enabled=1)
 
         body_go = b.add(1, m_Name=f"{prefab_name}_Body", m_IsActive=True)
-        body_tr = b.add(4, m_GameObject=pptr(body_go), m_Father=pptr(root_tr), m_LocalRotation={"w": 1.0})
+        body_tr = b.add(4, m_GameObject=pptr(body_go), m_Father=pptr(root_tr), m_LocalRotation={"w": 1.0},
+                        m_LocalScale={"x": 1.0, "y": 1.0, "z": 1.0})
 
         bone_tr: dict[str, int] = {}
         children_of: dict[int, list[int]] = {root_tr: [body_tr]}
@@ -259,8 +321,15 @@ def add_creature(b: SerializedBuilder, name: str, *, bones: list[str], clips: li
             parent_path, _, leaf = path.rpartition("/")
             parent_tr = bone_tr[parent_path] if parent_path else root_tr
             go = b.add(1, m_Name=leaf, m_IsActive=True)
-            tr = b.add(4, m_GameObject=pptr(go), m_Father=pptr(parent_tr), m_LocalRotation={"w": 1.0},
-                       m_LocalPosition={"x": 0.0, "y": 0.1 * (path.count("/") + 1), "z": 0.0})
+            if bone_locals:
+                (px, py, pz), (qx, qy, qz, qw) = bone_locals[path]
+                tr = b.add(4, m_GameObject=pptr(go), m_Father=pptr(parent_tr),
+                           m_LocalRotation={"x": qx, "y": qy, "z": qz, "w": qw},
+                           m_LocalPosition={"x": px, "y": py, "z": pz}, m_LocalScale={"x": 1.0, "y": 1.0, "z": 1.0})
+            else:
+                tr = b.add(4, m_GameObject=pptr(go), m_Father=pptr(parent_tr), m_LocalRotation={"w": 1.0},
+                           m_LocalPosition={"x": 0.0, "y": 0.1 * (path.count("/") + 1), "z": 0.0},
+                           m_LocalScale={"x": 1.0, "y": 1.0, "z": 1.0})
             b.get(go)["m_Component"] = [{"component": pptr(tr)}]
             bone_tr[path] = tr
             children_of.setdefault(parent_tr, []).append(tr)
@@ -312,3 +381,43 @@ def add_static_prop(b: SerializedBuilder, name: str) -> int:
     mr = b.add(23, m_GameObject=pptr(go), m_Enabled=True, m_Materials=[pptr(mat)])
     b.get(go)["m_Component"] = [{"component": pptr(tr)}, {"component": pptr(mf)}, {"component": pptr(mr)}]
     return go
+
+
+# Binding attributes for Transform curves in compiled (muscle) clips.
+ATTR_POSITION, ATTR_ROTATION, ATTR_SCALE, ATTR_EULER = 1, 2, 3, 4
+_ATTR_WIDTH = {ATTR_POSITION: 3, ATTR_ROTATION: 4, ATTR_SCALE: 3, ATTR_EULER: 3}
+
+
+def add_dense_clip(b: SerializedBuilder, name: str, tracks: list[tuple[str, int, list[tuple[float, ...]]]],
+                   sample_rate: float = 30.0, events: list[tuple[float, str]] = ()) -> int:
+    """An AnimationClip whose curves live in a compiled DenseClip, like a real build.
+
+    ``tracks``: [(transform path, attribute, [per-frame value tuple])]. Rotation values
+    are Unity quaternions (x, y, z, w); positions/scales are (x, y, z).
+    """
+    clip_node = b.node(74)
+    frames = len(tracks[0][2])
+    assert all(len(t[2]) == frames for t in tracks)
+    samples = []
+    for f in range(frames):
+        for _path, _attr, values in tracks:
+            samples.extend(float(v) for v in values[f])
+    curve_count = sum(_ATTR_WIDTH[attr] for _p, attr, _v in tracks)
+    muscle = default_value(next(c for c in clip_node.m_Children if c.m_Name == "m_MuscleClip"))
+    muscle["m_Clip"]["data"]["m_DenseClip"] = {"m_FrameCount": frames, "m_CurveCount": curve_count,
+                                               "m_SampleRate": sample_rate, "m_BeginTime": 0.0,
+                                               "m_SampleArray": samples}
+    muscle["m_StartTime"] = 0.0
+    muscle["m_StopTime"] = (frames - 1) / sample_rate
+    muscle["m_StartX"]["q"]["w"] = muscle["m_StopX"]["q"]["w"] = 1.0
+    for k in ("m_StartX", "m_StopX"):
+        muscle[k]["s"] = {"x": 1.0, "y": 1.0, "z": 1.0}
+    muscle["m_IndexArray"] = list(range(curve_count))
+    binding = default_value(next(c for c in clip_node.m_Children if c.m_Name == "m_ClipBindingConstant"))
+    gb_node = next(c for c in clip_node.m_Children if c.m_Name == "m_ClipBindingConstant")
+    gb_item = default_value(gb_node.m_Children[0].m_Children[0].m_Children[1])
+    binding["genericBindings"] = [dict(gb_item, path=crc(p), attribute=a, typeID=4) for p, a, _v in tracks]
+    ev_node = next(c for c in clip_node.m_Children if c.m_Name == "m_Events").m_Children[0].m_Children[1]
+    ev_list = [dict(default_value(ev_node), time=t, functionName=fn) for t, fn in events]
+    return b.add(74, m_Name=name, m_SampleRate=sample_rate, m_MuscleClip=muscle, m_MuscleClipSize=1,
+                 m_ClipBindingConstant=binding, m_Events=ev_list)

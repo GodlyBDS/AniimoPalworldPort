@@ -81,7 +81,8 @@ each opened file with its hash and serialized files (CAB names, externals).
 Produced by `aniimo-pal catalog build`. `species[]` entries contain: `key`,
 `suggested_id`, `display_name`, `grouping_evidence`, `prefabs[]` (object,
 name, asset path, `variant` + `variant_provenance`/`variant_evidence`),
-`skeleton` (bones with path, parent, skinned flag and local TRS),
+`skeleton` (bones with path, parent, skinned flag and local TRS; `skins[]` with each
+skinned renderer's mesh and ordered joint paths),
 `assets[]` (object, container, sha256, role, variant, slot, evidence,
 provenance), `animations[]` (object, `linked_via` controller|binding-match,
 `binding_overlap` [matched, total], `role_guess` (inferred), `event_count`),
