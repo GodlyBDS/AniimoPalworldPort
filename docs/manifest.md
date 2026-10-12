@@ -1,4 +1,4 @@
-# Manifest and creature project formats
+# Document formats (manifest, objects, catalog, creature)
 
 ## Manifest (`aniimo-pal/manifest`, schema 1.0.0)
 
@@ -8,7 +8,7 @@ Produced by `aniimo-pal scan`. JSON Schema: `src/aniimo_pal/schemas/manifest.sch
 {
   "schema": "aniimo-pal/manifest",
   "schema_version": "1.0.0",
-  "generator": {"name": "aniimo-pal", "version": "0.1.0"},
+  "generator": {"name": "aniimo-pal", "version": "0.2.0"},
   "created_utc": "2026-10-12T09:00:00+00:00",
   "duration_seconds": 1.234,
   "source": {"root_label": "Aniimo", "root_path": null, "host_platform": "Windows"},
@@ -57,7 +57,45 @@ Guarantees checked by `aniimo-pal validate`:
 - `unity_yaml`: `class_ids_in_probe` (Unity class ID → name and count).
 - `unity_meta`: `guid`. Textures: `width`/`height` (+ `fourcc`, `mip_count`, …). `model_fbx`: `encoding`, `fbx_version`.
 
-## Creature project (`aniimo-pal/creature`, schema 0.1.0, may change)
+## Object index (`aniimo-pal/objects`, schema 0.1.0)
+
+Produced by `aniimo-pal inventory`. One record per Unity object:
+
+```jsonc
+{"id": "cab-foxlet:47",            // <serialized-file name, lowercased>:<path id>
+ "cab": "cab-foxlet", "path_id": 47, "container": "StreamingAssets/foxlet.bundle",
+ "class": "Material", "class_id": 21, "name": "Foxlet_Mat",
+ "asset_path": null,                // AssetBundle container path, e.g. assets/creatures/foxlet/foxlet.prefab
+ "refs": [{"field": "m_SavedProperties.m_TexEnvs[0][1].m_Texture", "target": "cab-foxlet:45"}],
+ "info": {"texture_slots": ["_MainTex", "_BumpMap"], "colors": {}, "floats": {}},
+ "error": null}
+```
+`info` per class: Texture2D size/format/streamed; Mesh vertex/submesh counts
+and bone-name hashes; AnimationClip binding path hashes, sample rate, length
+and **events**; Avatar bone paths; Transform local TRS. `containers[]` lists
+each opened file with its hash and serialized files (CAB names, externals).
+`skipped[]` lists encryption-flagged or unsupported files that were not opened.
+
+## Catalog (`aniimo-pal/catalog`, schema 0.1.0)
+
+Produced by `aniimo-pal catalog build`. `species[]` entries contain: `key`,
+`suggested_id`, `display_name`, `grouping_evidence`, `prefabs[]` (object,
+name, asset path, `variant` + `variant_provenance`/`variant_evidence`),
+`skeleton` (bones with path, parent, skinned flag and local TRS),
+`assets[]` (object, container, sha256, role, variant, slot, evidence,
+provenance), `animations[]` (object, `linked_via` controller|binding-match,
+`binding_overlap` [matched, total], `role_guess` (inferred), `event_count`),
+and `warnings[]`. The `rules` used are embedded for reproducibility.
+
+## Creature project (`aniimo-pal/creature`, schema 0.2.0, may change)
+
+0.2.0 adds (all optional, 0.1.x files remain valid): `prefabs`, `skeleton`,
+`notes`, `history`; per-asset `class`, `name`, `slot`, `provenance`
+(verified|inferred|user), `extracted`, `assetripper`; the `unclassified`
+asset variant (must be resolved before `mapped`); and the reserved `combat`
+section (see architecture.md §9). Status order:
+`draft → mapped → extracted → converted → configured → validated → exported`.
+`mapped` requires every non-rejected association to be confirmed.
 
 Created with `aniimo-pal creature init <workspace> --id <id> --name <name>`.
 
@@ -81,7 +119,16 @@ Created with `aniimo-pal creature init <workspace> --id <id> --name <name>`.
     "shiny":    {"enabled": true, "spawn_probability": 0.002},
     "prismana": {"enabled": true, "spawn_probability": 0.0005}
   },
-  "integration": {"mode": "replace", "replace_target": null, "notes": ""}
+  "integration": {"mode": "replace", "replace_target": null, "notes": ""},
+  "combat": {
+    "profiles": ["ai_companion"],
+    "abilities": [{"id": "ult", "kind": "ultimate", "provenance": "inferred",
+                   "phases": [{"clip": "cab-x:12", "label": "windup"}, {"clip": "cab-x:13", "label": "active"}],
+                   "effects": {"vfx": ["cab-x:40"]},
+                   "parameters": {"cooldown_s": {"value": 30, "provenance": "user"}},
+                   "palworld_mapping": {"target": "partner_skill", "status": "proposed"}}],
+    "ultimate": {"ability": "ult", "target": "partner_skill"}
+  }
 }
 ```
 

@@ -34,30 +34,27 @@ Design rules that every module follows:
 
 ## 2. Package map
 
-Status: ✅ implemented and tested · 🟡 interface/discovery only · ⬜ planned
+Status: ✅ implemented and tested · 🟡 partial · ⬜ planned
 
 ```
 src/aniimo_pal/
-  cli.py                  ✅ argparse CLI (future GUI calls the same functions)
-  config.py               ✅ TOML config, strict keys, defaults = dataclasses
-  log.py                  ✅ console + JSON-lines logging
-  scanner/                ✅ milestone 1
-    unity_headers.py         UnityFS/legacy/SerializedFile header parsing, encryption flag
-    formats.py               format registry (kind, category, pipeline route) + detection
-    scanner.py               read-only walk, single-pass hash + probe, relations
-  manifest/               ✅ milestone 1
-    model.py, io.py          schema id/version, summary, atomic write, validation
-    diff.py, verify.py       game-update diff, on-disk verification
-  schemas/                ✅ JSON Schema for manifests
-  creature/               ✅ (data model only) per-creature project + variant roll reference
-  adapters/               🟡 discovery for UnityPy, AssetRipper, Blender, Unreal Editor
-  catalog/                ⬜ creature catalog built from container object listings
-  identify/               ⬜ asset association engine (rules + evidence + confirmations)
-  convert/                ⬜ mesh/texture/material/skeleton/animation stages
-    blender_scripts/         ⬜ run inside Blender (GLB to FBX, axis/scale, bone rename, bake)
-  unreal/                 ⬜ UE 5.1 Python import script(s) (run inside the editor)
-  modkit/                 ⬜ Palworld mod scaffold, PalSchema JSON, packaging metadata
-  studio/                 ⬜ GUI shell (guided workflow) + 3D preview
+  cli.py                  ✅ argparse CLI (the future GUI calls the same functions)
+  config.py, log.py       ✅ TOML config with strict keys; console + JSON-lines logging
+  scanner/                ✅ M1: read-only walk, hashes, format detection, Unity headers, encryption flags
+  manifest/               ✅ M1: manifest schema, validation, diff, verify; shared atomic JSON writer
+  adapters/
+    unitypy_adapter.py    ✅ M2: object inventory (classes, names, container paths, PPtr refs, class facts)
+    assetripper.py        ✅ M2: headless session (launch, load, export primary/project, completion markers)
+    external.py           🟡 Blender / Unreal Editor discovery only
+  inventory.py            ✅ M2: manifest -> objects.json (hash re-check, encrypted files never opened)
+  catalog/                ✅ M3: dependency graph -> species, variants, skeleton, animations, evidence
+  creature/               ✅ creature.json model, workflow (from catalog, review, associate), variants, combat schema
+  extract.py              ✅ M2: UnityPy export (PNG/OBJ/JSON) + AssetRipper export mapped back to assets
+  convert/                ⬜ M4: Blender scripts (GLB->FBX, axis/scale, bone rename/retarget, .anim->FBX animation)
+  unreal/                 ⬜ M5: UE 5.1 Python import script(s), run inside the editor
+  modkit/                 ⬜ M5/M6: Palworld mod scaffold, PalSchema JSON, packaging metadata
+  combat/                 ⬜ M7: combat discovery + translation templates (schema already reserved)
+  studio/                 ⬜ M8: GUI shell (guided workflow, 3D preview, combat mapping)
 ```
 
 ## 3. Data flow and documents
@@ -97,23 +94,32 @@ documents with an unknown `schema`. Minor version bumps only add fields.
   packs/<pack-name>.json               multi-creature mod pack definitions (later)
 ```
 
-## 4. Automatic asset association (milestone 3+)
+## 4. Automatic asset association (implemented in milestone 2/3)
 
-Unity bundles hold explicit references (GameObject → SkinnedMeshRenderer → Mesh,
-Materials → Textures, Animator → AnimatorController → AnimationClips, Avatar →
-skeleton). Association is therefore **graph-based first and name-based second**:
+Unity data holds explicit references: GameObject → components (Transform,
+SkinnedMeshRenderer, Animator), SkinnedMeshRenderer → Mesh, Materials and bone
+Transforms, Material → Textures, Animator → Avatar and AnimatorController →
+AnimationClips. Association is therefore **graph-first and inference-second**.
+Every association records `evidence` and `provenance`:
 
-1. **Dependency graph** from UnityPy/AssetRipper (PathID references, bundle
-   dependencies). A creature's root prefab pulls in its subgraph.
-2. **Evidence scoring** for edges the graph lacks: shared name stems, a shared
-   bundle or directory, matching bone sets between a mesh and an animation, and
-   texture-slot naming (`_albedo`, `_n`, `_mask`).
-3. **Variant detection**: material/texture sets that differ while the mesh and
-   skeleton stay the same are proposed as Shiny/Prismana candidates. The user
-   confirms them; the tool never decides on its own.
-4. Each proposal is stored in `creature.json` as `association: proposed` with an
-   `evidence` list. The user confirms or rejects it in the studio. Confirmed
-   patterns are saved to `rules/` and reused for the next creature.
+| Step | How | Provenance |
+|------|-----|-----------|
+| Object index | `inventory` lists every object and its PPtr references, resolving cross-bundle references through each file's externals (CAB names) | — |
+| Creature candidates | Root GameObjects whose hierarchy contains a SkinnedMeshRenderer (MeshRenderer optional via rules) | verified |
+| Species grouping | Prefabs sharing a mesh object, or (fallback) identical skinned bone paths + the same name stem | verified / inferred |
+| Assets | Meshes, materials, textures (with slot names), Avatar and controller reached through references | verified |
+| Variant labels | Rule keywords in the prefab name, asset path or material name; extra keyword-less prefabs become `unclassified` | inferred |
+| Variant attribution | Assets used only by one variant's prefab belong to that variant, otherwise `shared` | verified graph + inferred label |
+| Skeleton | Transform hierarchy under the prefab root, with local TRS and a skinned flag per bone | verified |
+| Animations | Controller-linked clips (verified). Unlinked clips are matched when enough of their bound transform-path CRC32 hashes exist in the skeleton (`min_binding_matches`, `min_binding_ratio`) | verified / inferred |
+| Clip roles | Name keywords (idle/walk/attack/ultimate/…) | inferred, advisory only |
+
+`creature init --from-catalog` auto-confirms **verified** associations, unless
+`--propose-all` is passed. Everything inferred stays `proposed` until the user
+confirms or rejects it (`creature review` / `creature associate`; later in the
+studio). Keywords and thresholds live in a rules TOML
+(`config/catalog_rules.toml`, copy to `<workspace>/rules/`), so a ruleset tuned
+on one creature is reused for the next.
 
 ## 5. Intermediate editor (studio)
 
@@ -121,6 +127,12 @@ Requirements: preview the mesh, play animations, show the skeleton, check
 material/texture slots, edit the bone mapping to the target Palworld skeleton
 (replace mode) or validate a new skeleton (new_pal mode), assign animations to
 Palworld roles (idle, walk, run, attack, …), and switch between variants.
+
+The studio also gets a **Combat Mapping** panel (§9): it lists discovered
+attacks and the Ultimate, previews clips and their events, lets the user assign
+clips to Palworld skill slots and the Partner Skill, and sets parameters,
+effects, AI rules and the interaction profile. It shows provenance for every
+value.
 
 Recommended approach (to confirm in milestone 4):
 - **Blender add-on as the deep editor.** Rigs, weights, retargeting, the action
@@ -176,3 +188,70 @@ identity.
   runs extraction locally.
 - Packaging: `pip install` today; a frozen desktop build (e.g. PyInstaller) when
   the studio exists.
+
+## 9. Combat translation (core requirement; milestone 7)
+
+Aniimo lets the player transform into a creature and use its attacks and
+Ultimate. Palworld drives Pals through AI, active skills, partner skills and
+(for some Pals) mounted combat. The toolkit must **translate** a creature's
+combat identity into Palworld mechanics, not just import attack animations.
+
+### 9.1 Data model (reserved now in `creature.json` → `combat`)
+- `profiles`: integration profiles from `ai_companion`, `partner_skill`,
+  `mounted` and `player_ability`. A creature is never made rideable by default.
+- `abilities[]`: `id`, `kind` (basic, special, ultimate, movement, passive,
+  transformation, support), `provenance`, ordered `phases[]` (each references
+  one of the creature's animation assets, so **multi-stage** sequences are
+  native), `effects` (vfx/sfx/projectiles, as asset references), `parameters`
+  (each value carries its own provenance), and `palworld_mapping`
+  (target + review status).
+- `ultimate`: `{ability, target}` with **`target: "partner_skill"` by default**.
+- Variants inherit the base combat config. Per-variant `combat_overrides` need
+  `verified` or `user` provenance.
+- Validation is structural only for now (`aniimo-pal creature validate`).
+  Missing facts stay absent and are never invented.
+
+### 9.2 Discovery (verified vs inferred)
+- **Verified today:** AnimationClip events (time, function name, parameters)
+  are captured in the inventory and in extracted clip JSON. They are the
+  primary source for hit frames and VFX/SFX trigger timing.
+- **Planned:** controller state-machine structure (state names, transitions →
+  combo order), MonoBehaviour skill/config data (needs type trees or script
+  metadata; only where the game data is readable), and projectile/VFX prefabs
+  referenced from skill data. Each fact is tagged `verified`. Name-based
+  guesses (clip `role_guess`) stay `inferred` and advisory.
+
+### 9.3 Ultimate → Partner Skill framework (design decision)
+The Aniimo Ultimate becomes the creature's **unique Palworld Partner Skill**,
+preserving its cinematic identity:
+- The original multi-phase clip sequence plays in order (windup → active →
+  recovery …). It is never swapped for a generic Palworld animation unless
+  technically unavoidable, and if it is, that is recorded as a limitation.
+- Damage, VFX, SFX and projectile spawns are synchronised to the clip's own
+  animation events (mapped to Unreal anim notifies at import).
+- Transformation-specific camera, targeting, movement and input are adapted
+  to Partner Skill activation (player key press). AI-usage rules and
+  cooldowns are configurable.
+- Implemented as reusable **templates** (melee, ranged, projectile, AoE,
+  charge, multi-hit combo, buff/debuff, heal/support, movement, ultimate)
+  parameterised per creature. No per-creature code.
+
+### 9.4 What must be verified before implementation (milestone 7 research)
+From community sources **[source, not tested]**: active-skill data lives in
+`DT_WazaDataTable_Common` (cooldown field `CoolTime`), and partner skills in
+`DT_PartnerSkill` / `DT_PartnerSkillParameter`. Partner skills are passive
+or active; active ones are triggered by the Partner Skill key and gated by
+technology. Internal IDs can change between game patches.
+
+**Unknown:**
+- whether a new Pal can get a *new* partner skill (not a reused one) through
+  PalSchema rows alone, or whether Blueprint/C++ work in the modding kit is
+  needed;
+- how Pal attack montages and notifies are driven;
+- whether custom AI usage rules are possible.
+
+Milestone 7 starts with a spike: one creature, one basic attack, one
+multi-phase partner skill, tested in game. Static validation (references,
+cooldown ranges, missing clips or effects) is kept separate from in-game
+verification in every report.
+
