@@ -26,6 +26,10 @@ class StepStopped(Exception):
     """The user stopped the running step."""
 
 
+class StepFailed(Exception):
+    """A step exited with an error (its output, with the reason, is already in the log)."""
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     """Stop a step and every process it started (worker pools, AssetRipper, Blender)."""
     if proc.poll() is not None:
@@ -64,6 +68,11 @@ class Workspace:
     @property
     def catalog(self) -> Path:
         return self.root / "catalog.json"
+
+    @property
+    def catalog_rules(self) -> Path:
+        """Catalog rules chosen in the Studio (e.g. which name groups are creatures)."""
+        return self.root / "catalog_rules.toml"
 
     def creature_file(self, creature_id: str) -> Path:
         return self.root / "creatures" / creature_id / "creature.json"
@@ -129,21 +138,25 @@ class StepRunner:
         return self.base() + ["inventory", str(self.ws.manifest), self.game, "-o", str(self.ws.objects)]
 
     def cmd_catalog(self) -> list[str]:
-        return self.base() + ["catalog", "build", str(self.ws.objects), "-o", str(self.ws.catalog)]
+        rules = ["--rules", str(self.ws.catalog_rules)] if self.ws.catalog_rules.is_file() else []
+        return self.base() + ["catalog", "build", str(self.ws.objects), "-o", str(self.ws.catalog)] + rules
 
     def cmd_create(self, species_key: str) -> list[str]:
         return self.base() + ["creature", "init", str(self.ws.root), "--from-catalog", str(self.ws.catalog),
                               "--species", species_key]
 
-    def cmd_extract(self, creature_file: Path) -> list[str]:
-        return self.base() + ["creature", "extract", str(creature_file), "--root", self.game]
+    def cmd_extract(self, creature_file: Path, include_proposed: bool = False) -> list[str]:
+        return self.base() + ["creature", "extract", str(creature_file), "--root", self.game] + \
+            (["--include-proposed"] if include_proposed else [])
 
-    def cmd_assetripper(self, creature_file: Path, mode: str) -> list[str]:
+    def cmd_assetripper(self, creature_file: Path, mode: str, include_proposed: bool = False) -> list[str]:
         return self.base() + ["creature", "export-assetripper", str(creature_file), "--root", self.game,
-                              "--mode", mode, "--assetripper", self.tools.get("assetripper", ""), "--replace"]
+                              "--mode", mode, "--assetripper", self.tools.get("assetripper", ""), "--replace"] + \
+            (["--include-proposed"] if include_proposed else [])
 
-    def cmd_convert(self, creature_file: Path) -> list[str]:
-        return self.base() + ["creature", "convert", str(creature_file), "--blender", self.tools.get("blender", "")]
+    def cmd_convert(self, creature_file: Path, include_proposed: bool = False) -> list[str]:
+        return self.base() + ["creature", "convert", str(creature_file), "--blender", self.tools.get("blender", "")] + \
+            (["--include-proposed"] if include_proposed else [])
 
     def cmd_preview(self, creature_file: Path) -> list[str]:
         return self.base() + ["creature", "preview", str(creature_file), "--blender", self.tools.get("blender", "")]
@@ -194,6 +207,40 @@ class StepRunner:
             if code == 2 or (code == 1 and not allow_check_failure):
                 return False
         return True
+
+
+CREATURE_STEPS = ("extract", "primary", "project", "convert", "preview")
+STEP_LABELS = {"extract": "extract", "primary": "AssetRipper model export", "project": "AssetRipper animation export",
+               "convert": "convert to FBX", "preview": "3D preview"}
+
+
+def step_done(creature_dir: Path, step: str) -> bool:
+    if step == "extract":
+        return (creature_dir / "extract" / "unitypy" / "report.json").is_file()
+    if step in ("primary", "project"):
+        out = creature_dir / "extract" / "assetripper" / step
+        return out.is_dir() and any(out.iterdir())
+    if step == "convert":
+        return (creature_dir / "convert" / "report.json").is_file()
+    if step == "preview":
+        return (creature_dir / "preview" / "preview.blend").is_file()
+    raise ValueError(step)
+
+
+def with_prerequisites(creature_dir: Path, which: tuple[str, ...]) -> tuple[str, ...]:
+    """``which`` plus the earlier steps it needs that have not run yet, in pipeline order.
+
+    The preview needs the converted FBX; conversion needs both AssetRipper exports.
+    """
+    needs = {"preview": ("convert",), "convert": ("primary", "project")}
+    wanted = set(which)
+    todo = list(which)
+    while todo:
+        for dep in needs.get(todo.pop(), ()):
+            if dep not in wanted and not step_done(creature_dir, dep):
+                wanted.add(dep)
+                todo.append(dep)
+    return tuple(s for s in CREATURE_STEPS if s in wanted)
 
 
 def unknown_files_breakdown(manifest: dict[str, Any], top: int = 8) -> dict[str, list[tuple[str, int]]]:

@@ -12,6 +12,13 @@ min_binding_ratio = 0.8
 # A clip that matches the skeletons of more species than this is not associated by binding match
 # (shared rigs, e.g. humanoid avatar parts, make such a match meaningless); it is counted as ambiguous.
 max_binding_match_species = 3
+# Number tokens with at least this many digits are IDs (P_Parmon_10025) and stay in the species name;
+# shorter numbers (Foxlet_01) are treated as numbering and ignored.
+min_id_digits = 4
+# Keep only prefabs whose name starts with one of these prefixes (token form, e.g. "p_parmon");
+# empty = every rigged prefab. The Studio's "Choose creature groups" writes these for you.
+include_name_prefixes = []
+exclude_name_prefixes = []
 # Tokens ignored when deriving a species name from a prefab name.
 stop_tokens = ["prefab", "body", "mesh", "model", "lod0", "skin", "mdl", "char", "npc"]
 

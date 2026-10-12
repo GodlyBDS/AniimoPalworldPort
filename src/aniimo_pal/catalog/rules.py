@@ -11,6 +11,7 @@ Keyword matching is token-based and case-insensitive: names are split on
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from dataclasses import asdict, dataclass, field
@@ -49,6 +50,12 @@ class CatalogRules:
     min_binding_matches: int = 3
     min_binding_ratio: float = 0.8
     max_binding_match_species: int = 3
+    # Number tokens with at least this many digits are IDs (e.g. P_Parmon_10025) and stay part of the
+    # species name; shorter ones (Foxlet_01) are treated as numbering and dropped.
+    min_id_digits: int = 4
+    # Only prefabs whose name starts with one of these token prefixes are candidates (empty: all).
+    include_name_prefixes: list[str] = field(default_factory=list)
+    exclude_name_prefixes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -81,7 +88,7 @@ def load_rules(path: str | Path | None) -> CatalogRules:
         elif isinstance(default, list):
             if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
                 raise ConfigError(f"catalog.{key} must be a list of strings")
-            value = [s.lower() for s in value]
+            value = [name_key(s) for s in value] if key.endswith("_name_prefixes") else [s.lower() for s in value]
         elif isinstance(default, bool):
             if not isinstance(value, bool):
                 raise ConfigError(f"catalog.{key} must be a boolean")
@@ -108,6 +115,31 @@ def tokens(name: str | None) -> list[str]:
     return [t.lower() for t in _SPLIT.split(_CAMEL.sub("_", name)) if t]
 
 
+def name_key(name: str | None) -> str:
+    """Normalised token form of a name: ``NG_P_Parmon_1018403`` -> ``ng_p_parmon_1018403``."""
+    return "_".join(tokens(name))
+
+
+def _has_prefix(key: str, prefix: str) -> bool:
+    return key == prefix or key.startswith(prefix + "_")
+
+
+def name_group(name: str | None, min_id_digits: int) -> tuple[str, bool]:
+    """(group prefix, has ID): the tokens before the first ID number, else the first two tokens."""
+    toks = tokens(name)
+    for i, t in enumerate(toks):
+        if t.isdigit() and len(t) >= min_id_digits:
+            return "_".join(toks[:i]) or "(id first)", True
+    return "_".join(toks[:2]) or "(unnamed)", False
+
+
+def name_selected(name: str | None, rules: "CatalogRules") -> bool:
+    key = name_key(name)
+    if rules.include_name_prefixes and not any(_has_prefix(key, p) for p in rules.include_name_prefixes):
+        return False
+    return not any(_has_prefix(key, p) for p in rules.exclude_name_prefixes)
+
+
 def match_keyword(name: str | None, table: dict[str, list[str]]) -> tuple[str, str] | None:
     """Return (key, keyword) for the first table entry whose keyword is a token of ``name``."""
     toks = tokens(name)
@@ -116,3 +148,47 @@ def match_keyword(name: str | None, table: dict[str, list[str]]) -> tuple[str, s
             if word in toks:
                 return key, word
     return None
+
+
+def _toml_value(v: Any) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=True)  # a JSON string with ASCII escapes is a valid TOML basic string
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    raise TypeError(f"cannot write {type(v).__name__} to TOML")
+
+
+def update_rules_file(path: str | Path, **changes: Any) -> CatalogRules:
+    """Set rule values in a rules TOML file (created if missing), keeping its other settings.
+
+    Comments in an existing file are not preserved. Returns the resulting rules.
+    """
+    p = Path(path)
+    section: dict[str, Any] = {}
+    if p.is_file():
+        with open(p, "rb") as fh:
+            data = tomllib.load(fh)
+        section = dict(data.get("catalog", data))
+    section.update(changes)
+    known = set(asdict(CatalogRules()))
+    if set(section) - known:
+        raise ConfigError(f"unknown catalog rule keys: {sorted(set(section) - known)}")
+    lines = ["# Catalog rules for this workspace (written by the Studio; see config/catalog_rules.toml).", "",
+             "[catalog]"]
+    tables = []
+    for key, value in section.items():
+        if isinstance(value, dict):
+            tables.append((key, value))
+        else:
+            lines.append(f"{key} = {_toml_value(value)}")
+    for key, table in tables:
+        lines += ["", f"[catalog.{key}]"] + [f"{json.dumps(k)} = {_toml_value(v)}" for k, v in table.items()]
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    rules = load_rules(tmp)  # validate before replacing
+    tmp.replace(p)
+    return rules

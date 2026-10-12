@@ -110,6 +110,16 @@ skinned renderer's mesh and ordered joint paths),
 provenance), `animations[]` (object, `linked_via` controller|binding-match,
 `binding_overlap` [matched, total], `role_guess` (inferred), `event_count`),
 and `warnings[]`. The `rules` used are embedded for reproducibility.
+Species names keep ID numbers of `min_id_digits` (default 4) or more digits, so
+`P_Parmon_10025` and `P_Parmon_10503` are separate species while `Foxlet_01`
+still groups with `Foxlet`. Each species may carry a `codename` guess
+(`{value, id, evidence, alternatives, provenance: "inferred"}`) taken from
+bundle file names and asset paths that put a word right after its ID, e.g.
+`aexp_tcpm_10503_sleepybear_tga_0_<hash>.uab` → `sleepybear`.
+`include_name_prefixes` / `exclude_name_prefixes` restrict candidates by name
+prefix (token form, e.g. `p_parmon`); `summary.name_groups` lists every rigged
+prefab group (`prefix`, `prefabs`, `with_id`, `examples`, `selected`) and
+`summary.prefabs_filtered_out` counts what the filter removed.
 `summary` adds `ambiguous_clip_count` (unlinked clips whose bindings fit more
 than `max_binding_match_species` skeletons, e.g. shared humanoid rigs, and are
 therefore not assigned) and `diagnostics` (renderers found, with mesh, with

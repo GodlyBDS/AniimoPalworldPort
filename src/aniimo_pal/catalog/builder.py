@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from aniimo_pal import TOOL_NAME, __version__
-from aniimo_pal.catalog.rules import CatalogRules, match_keyword, tokens
+from aniimo_pal.catalog.rules import CatalogRules, match_keyword, name_group, name_selected, tokens
 from aniimo_pal.creature.variants import BASE_REGION, STANDARD, variant_key
 from aniimo_pal.inventory import ObjectIndex
 
@@ -188,7 +188,8 @@ def _material_textures(idx: ObjectIndex, mat: dict[str, Any]) -> list[tuple[str,
 
 def _stem(name: str | None, rules: CatalogRules) -> str:
     variant_words = {w for words in rules.variant_keywords.values() for w in words}
-    toks = [t for t in tokens(name) if t not in variant_words and t not in rules.stop_tokens and not t.isdigit()]
+    toks = [t for t in tokens(name) if t not in variant_words and t not in rules.stop_tokens
+            and not (t.isdigit() and len(t) < rules.min_id_digits)]
     return "_".join(toks) or "creature"
 
 
@@ -215,12 +216,14 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
     idx = ObjectIndex(objects_doc)
     h = _Hierarchy(idx)
 
-    candidates = []
+    all_candidates = []
     roots = h.roots()
     for root in sorted(roots, key=lambda g: g["id"]):
         cand = _prefab_candidate(idx, h, root, rules)
         if cand is not None:
-            candidates.append(cand)
+            all_candidates.append(cand)
+    name_groups = _name_groups(all_candidates, rules)
+    candidates = [c for c in all_candidates if name_selected(c["root"].get("name"), rules)]
 
     # Group prefabs into species: shared mesh (verified), else same skeleton + name stem (inferred).
     uf = _UnionFind(len(candidates))
@@ -277,6 +280,8 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
             "prefab_count": len(candidates),
             "unassigned_clip_count": sum(1 for c in idx.by_class.get("AnimationClip", []) if c["id"] not in claimed),
             "ambiguous_clip_count": ambiguous,
+            "prefabs_filtered_out": len(all_candidates) - len(candidates),
+            "name_groups": name_groups,
             "diagnostics": _diagnostics(idx, h, roots, rules),
         },
         "species": species_list,
@@ -311,6 +316,56 @@ def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], r
         "missing_mesh_files": [{"cab": cab, "count": n, "container": owners.get(cab)}
                                for cab, n in sorted(missing_mesh_targets.items(), key=lambda kv: -kv[1])[:10]],
     }
+
+
+def _name_groups(candidates: list[dict[str, Any]], rules: CatalogRules, limit: int = 400) -> list[dict[str, Any]]:
+    """Rigged prefabs grouped by name prefix (e.g. p_parmon, eff_parmon, m_item), to choose which are creatures."""
+    groups: dict[str, dict[str, Any]] = {}
+    for c in candidates:
+        name = c["root"].get("name")
+        prefix, has_id = name_group(name, rules.min_id_digits)
+        g = groups.setdefault(prefix, {"prefix": prefix, "prefabs": 0, "with_id": 0, "examples": [],
+                                       "selected": name_selected(name, rules)})
+        g["prefabs"] += 1
+        g["with_id"] += has_id
+        if len(g["examples"]) < 3:
+            g["examples"].append(name)
+    return sorted(groups.values(), key=lambda g: (-g["prefabs"], g["prefix"]))[:limit]
+
+
+_GENERIC_NAME_TOKENS = {"tga", "png", "psd", "jpg", "jpeg", "exr", "asset", "mat", "fbx", "prefab", "anim", "controller",
+                        "mesh", "tex", "texture", "shader", "lod", "uab", "bundle", "normal", "mask", "albedo",
+                        "diffuse", "basecolor", "base", "color", "colour", "emission", "emissive", "metallic",
+                        "roughness", "occlusion", "specular", "alpha", "detail", "material", "head", "eye", "eyes",
+                        "face", "hair", "tail", "wing", "wings", "set", "skill", "eff", "vfx", "fx", "idle"}
+
+
+def _codename(rules: CatalogRules, base_name: str | None, texts: list[str]) -> dict[str, Any] | None:
+    """Guess an internal codename from file/asset names that put a word right after the species' ID number.
+
+    E.g. ID 10503 and a texture bundle ``aexp_tcpm_10503_sleepybear_tga_0_<hash>.uab`` -> ``sleepybear``
+    (pattern seen in a real Aniimo install; only a hint, other games or files may not follow it).
+    INFERRED: names are only hints; the user decides.
+    """
+    ids = [t for t in tokens(base_name) if t.isdigit() and len(t) >= rules.min_id_digits]
+    if not ids:
+        return None
+    skip = _GENERIC_NAME_TOKENS | set(rules.stop_tokens) | {w for ws in rules.variant_keywords.values() for w in ws}
+    counts: dict[str, int] = defaultdict(int)
+    example: dict[str, str] = {}
+    for text in texts:
+        toks = tokens(text.rsplit("/", 1)[-1])
+        for i, t in enumerate(toks[:-1]):
+            nxt = toks[i + 1]
+            if t in ids and nxt.isalpha() and len(nxt) >= 3 and nxt not in skip:
+                counts[nxt] += 1
+                example.setdefault(nxt, text)
+    if not counts:
+        return None
+    best = max(sorted(counts), key=lambda w: counts[w])
+    return {"value": best, "provenance": "inferred", "id": ids[0],
+            "evidence": f"{counts[best]} name(s) like {example[best].rsplit('/', 1)[-1]!r}",
+            "alternatives": sorted((w for w in counts if w != best), key=lambda w: -counts[w])[:3]}
 
 
 def _link_clips_by_binding(idx: ObjectIndex, rules: CatalogRules, species_list: list[dict[str, Any]],
@@ -494,10 +549,14 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
 
     for p in prefabs:
         p.pop("_cand")
+    # Codename hints come from bundle file names and asset paths (object names mostly name parts/slots).
+    texts = sorted({t for a in asset_list for t in (a.get("container"),) if t}
+                   | {t for p in prefabs for t in (p.get("container"), p.get("asset_path")) if t})
     return {
         "key": key,
         "suggested_id": f"aniimo_{key}"[:48],
         "display_name": _display(base["name"], rules),
+        "codename": _codename(rules, base["name"], texts),
         "grouping_evidence": group_evidence or ["single-prefab"],
         "prefabs": prefabs,
         "skeleton": skeleton,

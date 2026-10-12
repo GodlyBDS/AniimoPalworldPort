@@ -221,6 +221,32 @@ def test_step_commands_write_only_into_workspace(layout, tmp_path):
     assert r.cmd_convert(cfile)[-2:] == ["--blender", "/t/blender"]
 
 
+def test_step_options_rules_and_proposed(layout, tmp_path):
+    r = steps.StepRunner(layout, str(tmp_path / "Aniimo"), {"assetripper": "/t/ar", "blender": "/t/blender"})
+    cfile = r.ws.creature_file("aniimo_foxlet")
+    assert "--rules" not in r.cmd_catalog()
+    r.ws.root.mkdir(parents=True, exist_ok=True)
+    r.ws.catalog_rules.write_text("[catalog]\n")
+    assert r.cmd_catalog()[-2:] == ["--rules", str(r.ws.catalog_rules)] and layout.contains(r.ws.catalog_rules)
+    assert "--include-proposed" not in r.cmd_extract(cfile)
+    for cmd in (r.cmd_extract(cfile, True), r.cmd_assetripper(cfile, "primary", True), r.cmd_convert(cfile, True)):
+        assert cmd[-1] == "--include-proposed"
+
+
+def test_missing_earlier_steps_are_added_in_order(tmp_path):
+    d = tmp_path / "creature"
+    assert steps.with_prerequisites(d, ("preview",)) == ("primary", "project", "convert", "preview")
+    assert steps.with_prerequisites(d, ("extract",)) == ("extract",)
+    for mode in ("primary", "project"):
+        (d / "extract" / "assetripper" / mode).mkdir(parents=True)
+        (d / "extract" / "assetripper" / mode / "x.glb").write_bytes(b"x")
+    assert steps.with_prerequisites(d, ("preview",)) == ("convert", "preview")
+    (d / "convert").mkdir()
+    (d / "convert" / "report.json").write_text("{}")
+    assert steps.with_prerequisites(d, ("preview",)) == ("preview",)
+    assert steps.step_done(d, "convert") and not steps.step_done(d, "preview")
+
+
 def test_step_runner_streams_output(layout, monkeypatch):
     r = steps.StepRunner(layout, "/game", {})
     lines = []
@@ -375,5 +401,40 @@ def test_gui_smoke(layout):
         app.accept_game()
         assert "game_folder" not in app.settings
         assert app.stop_button.instate(["disabled"]) == (not app.busy)  # enabled only while a task runs
+        _creature_list_and_group_chooser(app, layout)
     finally:
         app.on_close()
+
+
+def _creature_list_and_group_chooser(app, layout):
+    ws = steps.Workspace(layout)
+    ws.root.mkdir(parents=True, exist_ok=True)
+    sp = {"key": "p_parmon_10503", "suggested_id": "aniimo_p_parmon_10503", "display_name": "P Parmon 10503",
+          "codename": {"value": "sleepybear", "id": "10503", "evidence": "1 name(s)", "provenance": "inferred"},
+          "prefabs": [{"variant": "normal"}], "assets": [], "animations": [], "warnings": ["w"] * 9,
+          "skeleton": {"bones": []}}
+    other = dict(sp, key="eff_parmon_skill", suggested_id="aniimo_eff", display_name="Eff Parmon Skill", codename=None)
+    groups = [{"prefix": "eff_parmon", "prefabs": 5, "with_id": 0, "examples": ["Eff_Parmon_Skill"], "selected": True},
+              {"prefix": "p_parmon", "prefabs": 2, "with_id": 2, "examples": ["P_Parmon_10503"], "selected": True}]
+    ws.catalog.write_text(json.dumps({"species": [sp, other],
+                                      "summary": {"name_groups": groups, "prefabs_filtered_out": 0}}))
+    app.refresh_species()
+    assert set(app.species_tree.get_children()) == {"p_parmon_10503", "eff_parmon_skill"}
+    app.species_filter.set("sleepy")  # search matches the codename
+    assert app.species_tree.get_children() == ("p_parmon_10503",)
+    app.species_tree.selection_set("p_parmon_10503")
+    app.show_creature()
+    text = app.creature_info.get("1.0", "end")
+    assert "sleepybear" in text and "and 5 more warnings" in text
+    app.species_filter.set("")
+    ran = []
+    app.run_scan = lambda which: ran.append(which)
+    app.choose_groups()
+    tree = next(w for w in app.group_dialog.winfo_children()[1].winfo_children() if w.winfo_class() == "Treeview")
+    assert tree.selection() == ("p_parmon",)  # first time: groups with ID numbers suggested
+    use = next(w for w in app.group_dialog.winfo_children()[2].winfo_children() if w.cget("text") == "Use selected groups")
+    use.invoke()
+    assert ran == [("catalog",)]
+    from aniimo_pal.catalog.rules import load_rules
+
+    assert load_rules(ws.catalog_rules).include_name_prefixes == ["p_parmon"]

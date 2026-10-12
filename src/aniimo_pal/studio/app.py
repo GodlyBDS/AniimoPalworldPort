@@ -68,6 +68,16 @@ class StudioApp:
         ttk.Label(header, text=TITLE, style="Title.TLabel").pack(side="left")
         ttk.Label(header, text=f"Everything is stored in: {layout.root}", foreground="#555").pack(side="right")
 
+        status = ttk.Frame(tk_root, padding=(12, 0, 12, 8))
+        status.pack(side="bottom", fill="x")  # packed before the tabs so it is never squeezed out
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(status, textvariable=self.status_var).pack(side="left")
+        self.stop_button = ttk.Button(status, text="Stop", command=self.stop_task)
+        self.stop_button.pack(side="right", padx=(6, 0))
+        self.stop_button.state(["disabled"])
+        self.progress = ttk.Progressbar(status, length=260, mode="determinate")
+        self.progress.pack(side="right")
+
         self.nb = ttk.Notebook(tk_root)
         self.nb.pack(fill="both", expand=True, padx=12, pady=8)
         self.tab_setup = self._build_setup_tab()
@@ -76,16 +86,6 @@ class StudioApp:
         self.tab_creatures = self._build_creatures_tab()
         self.tab_mods = self._build_mods_tab()
         self.tab_log = self._build_log_tab()
-
-        status = ttk.Frame(tk_root, padding=(12, 0, 12, 8))
-        status.pack(fill="x")
-        self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(status, textvariable=self.status_var).pack(side="left")
-        self.stop_button = ttk.Button(status, text="Stop", command=self.stop_task)
-        self.stop_button.pack(side="right", padx=(6, 0))
-        self.stop_button.state(["disabled"])
-        self.progress = ttk.Progressbar(status, length=260, mode="determinate")
-        self.progress.pack(side="right")
 
         tk_root.protocol("WM_DELETE_WINDOW", self.on_close)
         tk_root.after(100, self._drain_events)
@@ -163,6 +163,8 @@ class StudioApp:
                 fn()
             except steps.StepStopped:
                 error = STOPPED
+            except steps.StepFailed as exc:  # the reason is already in the log, no traceback needed
+                error = str(exc)
             except Exception as exc:  # report every failure in the GUI
                 error = f"{type(exc).__name__}: {exc}"
                 self.log(traceback.format_exc().rstrip())
@@ -467,27 +469,40 @@ class StudioApp:
         left = ttk.Frame(paned)
         paned.add(left, weight=1)
         ttk.Label(left, text="Creatures found in the game").pack(anchor="w")
-        cols = ("name", "variants", "project")
-        self.species_tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
-        for col, w, label in (("name", 160, "Name"), ("variants", 170, "Forms / appearances"), ("project", 90, "Project")):
+        top = ttk.Frame(left)
+        top.pack(fill="x", pady=(4, 0))
+        ttk.Label(top, text="Search:").pack(side="left")
+        self.species_filter = tk.StringVar()
+        self.species_filter.trace_add("write", lambda *_a: self.refresh_species())
+        ttk.Entry(top, textvariable=self.species_filter, width=18).pack(side="left", padx=4, fill="x", expand=True)
+        self.button(top, "Choose creature groups…", self.choose_groups).pack(side="right")
+        self.species_count = ttk.Label(left, text="", foreground="#555")
+        self.species_count.pack(anchor="w")
+        tree_box = ttk.Frame(left)
+        tree_box.pack(fill="both", expand=True, pady=4)
+        cols = ("name", "codename", "variants", "project")
+        self.species_tree = ttk.Treeview(tree_box, columns=cols, show="headings", selectmode="browse")
+        for col, w, label in (("name", 150, "Name"), ("codename", 100, "Codename (guess)"),
+                              ("variants", 120, "Forms / appearances"), ("project", 70, "Project")):
             self.species_tree.heading(col, text=label)
             self.species_tree.column(col, width=w, anchor="w")
-        self.species_tree.pack(fill="both", expand=True, pady=4)
+        sb = ttk.Scrollbar(tree_box, orient="vertical", command=self.species_tree.yview)
+        self.species_tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.species_tree.pack(side="left", fill="both", expand=True)
         self.species_tree.bind("<<TreeviewSelect>>", lambda _e: self.show_creature())
 
         right = ttk.Frame(paned, padding=(10, 0, 0, 0))
         paned.add(right, weight=2)
-        self.creature_info = ttk.Label(right, text="Select a creature on the left.", wraplength=620, justify="left")
-        self.creature_info.pack(anchor="w")
+        # Buttons first, so long creature details can never push them out of the window.
         row = ttk.Frame(right)
-        row.pack(fill="x", pady=6)
+        row.pack(fill="x")
         self.button(row, "Create project", self.create_project, accent=True).pack(side="left")
-        self.button(row, "Run all steps",
-                    lambda: self.creature_steps(("extract", "primary", "project", "convert", "preview")),
+        self.button(row, "Run all steps", lambda: self.creature_steps(steps.CREATURE_STEPS),
                     accent=True).pack(side="left", padx=6)
         self.button(row, "Open creature folder", self.open_creature_folder).pack(side="right")
         row2 = ttk.Frame(right)
-        row2.pack(fill="x")
+        row2.pack(fill="x", pady=(6, 0))
         self.button(row2, "Extract", lambda: self.creature_steps(("extract",))).pack(side="left")
         self.button(row2, "Export with AssetRipper", lambda: self.creature_steps(("primary", "project"))).pack(side="left", padx=6)
         self.button(row2, "Convert to FBX (Blender)", lambda: self.creature_steps(("convert",))).pack(side="left")
@@ -495,6 +510,9 @@ class StudioApp:
         row_p.pack(fill="x", pady=(6, 0))
         self.button(row_p, "Build 3D preview", lambda: self.creature_steps(("preview",))).pack(side="left")
         self.button(row_p, "Open 3D preview in Blender", self.open_preview, accent=True).pack(side="left", padx=6)
+        self.creature_info = ScrolledText(right, height=9, wrap="word", state="disabled")
+        self.creature_info.pack(fill="x", pady=(8, 0))
+        self._set_creature_info("Select a creature on the left.")
         sub = ttk.Notebook(right)
         sub.pack(fill="both", expand=True, pady=(8, 0))
         self.creature_sub = sub
@@ -505,20 +523,47 @@ class StudioApp:
         self.preview_image = None
         av = ttk.Frame(sub, padding=6)
         sub.add(av, text="Assets (★ = needs your decision)")
-        acols = ("idx", "role", "form", "appearance", "assoc", "prov", "name")
-        self.asset_tree = ttk.Treeview(av, columns=acols, show="headings", selectmode="extended", height=12)
-        for col, w in (("idx", 50), ("role", 80), ("form", 80), ("appearance", 90), ("assoc", 85), ("prov", 70),
-                       ("name", 220)):
-            self.asset_tree.heading(col, text=col)
-            self.asset_tree.column(col, width=w, anchor="w")
-        self.asset_tree.pack(fill="both", expand=True, pady=4)
         row3 = ttk.Frame(av)
         row3.pack(fill="x")
         self.button(row3, "Confirm selected", lambda: self.decide("confirm")).pack(side="left")
         self.button(row3, "Reject selected", lambda: self.decide("reject")).pack(side="left", padx=6)
         self.button(row3, "Confirm all proposed", lambda: self.decide("all")).pack(side="left")
+        acols = ("idx", "role", "form", "appearance", "assoc", "prov", "name")
+        abox = ttk.Frame(av)
+        abox.pack(fill="both", expand=True, pady=4)
+        self.asset_tree = ttk.Treeview(abox, columns=acols, show="headings", selectmode="extended", height=12)
+        for col, w in (("idx", 50), ("role", 80), ("form", 80), ("appearance", 90), ("assoc", 85), ("prov", 70),
+                       ("name", 220)):
+            self.asset_tree.heading(col, text=col)
+            self.asset_tree.column(col, width=w, anchor="w")
+        asb = ttk.Scrollbar(abox, orient="vertical", command=self.asset_tree.yview)
+        self.asset_tree.configure(yscrollcommand=asb.set)
+        asb.pack(side="right", fill="y")
+        self.asset_tree.pack(side="left", fill="both", expand=True)
+        self._catalog_cache: tuple[float, dict | None] = (-1.0, None)
         self.refresh_species()
         return f
+
+    def _set_creature_info(self, text: str) -> None:
+        self.creature_info.configure(state="normal")
+        self.creature_info.delete("1.0", "end")
+        self.creature_info.insert("end", text)
+        self.creature_info.configure(state="disabled")
+
+    def load_catalog(self) -> dict | None:
+        """The catalog, re-read only when the file changed (it can be large)."""
+        path = steps.Workspace(self.layout).catalog
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        if self._catalog_cache[0] != mtime:
+            self._catalog_cache = (mtime, steps.read_json(path))
+        return self._catalog_cache[1]
+
+    def species_entry(self, key: str | None) -> dict | None:
+        cat = self.load_catalog()
+        return next((s for s in (cat or {}).get("species", []) if s["key"] == key), None) if key else None
 
     def selected_species(self) -> str | None:
         sel = self.species_tree.selection()
@@ -526,38 +571,54 @@ class StudioApp:
 
     def refresh_species(self) -> None:
         ws = steps.Workspace(self.layout)
-        cat = steps.read_json(ws.catalog)
+        cat = self.load_catalog()
         projects = ws.creatures()
+        keep = self.selected_species()
         self.species_tree.delete(*self.species_tree.get_children())
         if not cat:
+            self.species_count.configure(text="")
             return
+        needle = self.species_filter.get().strip().lower()
+        shown = 0
         for sp in cat["species"]:
+            code = (sp.get("codename") or {}).get("value") or ""
+            if needle and needle not in f"{sp['key']} {sp['display_name']} {code}".lower():
+                continue
             variants = sorted({p.get("variant", "") for p in sp["prefabs"]})
             project = projects.get(sp["suggested_id"])
             status = (steps.read_json(project) or {}).get("status", "?") if project else "—"
-            self.species_tree.insert("", "end", iid=sp["key"], values=(sp["display_name"], ", ".join(variants), status))
+            self.species_tree.insert("", "end", iid=sp["key"],
+                                     values=(sp["display_name"], code, ", ".join(variants), status))
+            shown += 1
+        s = cat["summary"]
+        hidden = s.get("prefabs_filtered_out", 0)
+        self.species_count.configure(text=f"{shown} of {len(cat['species'])} shown"
+                                     + (f"; {hidden} rigged prefabs hidden by your group choice" if hidden else
+                                        "; all rigged models are listed (effects, items, … too): "
+                                        "use 'Choose creature groups…'" if s.get("name_groups") else ""))
+        if keep and self.species_tree.exists(keep):
+            self.species_tree.selection_set(keep)
 
     def current_creature_file(self) -> Path | None:
-        key = self.selected_species()
-        cat = steps.read_json(steps.Workspace(self.layout).catalog)
-        if not key or not cat:
-            return None
-        sp = next((s for s in cat["species"] if s["key"] == key), None)
+        sp = self.species_entry(self.selected_species())
         if sp is None:
             return None
         path = steps.Workspace(self.layout).creature_file(sp["suggested_id"])
         return path if path.is_file() else None
 
     def show_creature(self) -> None:
-        key = self.selected_species()
-        cat = steps.read_json(steps.Workspace(self.layout).catalog)
-        sp = next((s for s in (cat or {}).get("species", []) if s["key"] == key), None)
+        sp = self.species_entry(self.selected_species())
         self.asset_tree.delete(*self.asset_tree.get_children())
         if sp is None:
             return
         info = [f"{sp['display_name']}  ({len(sp['assets'])} assets, {len(sp['animations'])} animations, "
                 f"{len(sp['skeleton']['bones'])} bones)"]
+        code = sp.get("codename")
+        if code:
+            info.append(f"Codename (guess from file names, ID {code['id']}): {code['value']}  ·  {code['evidence']}")
         info += [f"⚠ {w}" for w in sp["warnings"][:4]]
+        if len(sp["warnings"]) > 4:
+            info.append(f"⚠ … and {len(sp['warnings']) - 4} more warnings")
         path = self.current_creature_file()
         if path:
             from aniimo_pal.creature.model import load_creature
@@ -567,6 +628,8 @@ class StudioApp:
             c = load_creature(path)
             todo = set(pending(c))
             info.append(f"Project status: {c['status']}  ·  decisions needed: {len(todo)}")
+            done = [steps.STEP_LABELS[s] for s in steps.CREATURE_STEPS if steps.step_done(path.parent, s)]
+            info.append("Steps done: " + (", ".join(done) if done else "none yet"))
             for ctx in CONTEXTS:
                 p = outcome_probabilities(c["variants"], ctx)
                 info.append(f"{ctx}: Shiny {one_in(p['any_shiny'])}, Prismana {one_in(p['any_prismana'])}, "
@@ -578,12 +641,67 @@ class StudioApp:
                                                                       a.get("provenance", ""), a.get("name")))
             anims = [a for a in c["assets"] if a["role"] == "animation" and a["association"] != "rejected"]
             if anims:
-                info.append("Animations: " + ", ".join(
+                info.append(f"Animations ({len(anims)}): " + ", ".join(
                     a.get("name", "?") + (f" ({a['role_guess']})" if a.get("role_guess") else "") for a in anims))
         else:
             info.append("No project yet: click 'Create project'.")
-        self.creature_info.configure(text="\n".join(info))
+        self._set_creature_info("\n".join(info))
         self.show_preview_image(path)
+
+    def choose_groups(self) -> None:
+        """Pick which name groups (p_parmon, m_monster, …) are creatures; rebuilds the creature list."""
+        cat = self.load_catalog()
+        groups = (cat or {}).get("summary", {}).get("name_groups")
+        if not groups:
+            messagebox.showinfo(TITLE, "Run '3. Find creatures' first (Scan & catalog tab).")
+            return
+        ws = steps.Workspace(self.layout)
+        chosen_before = ws.catalog_rules.is_file()
+        win = tk.Toplevel(self.tk)
+        win.title("Choose creature groups")
+        win.geometry("820x560")
+        ttk.Label(win, wraplength=780, justify="left", padding=8, text=(
+            "Every rigged model in the game is grouped by the start of its name. Select the groups that are "
+            "creatures (Ctrl/Shift-click for several) and click 'Use selected groups'. Groups whose names "
+            "carry an ID number are pre-selected as a suggestion the first time. Your choice is saved in the "
+            "workspace and the creature list is rebuilt (this reads the object list again: about a minute "
+            "for a large game).")).pack(fill="x")
+        box = ttk.Frame(win, padding=(8, 0))
+        box.pack(fill="both", expand=True)
+        cols = ("prefix", "prefabs", "with_id", "examples")
+        tree = ttk.Treeview(box, columns=cols, show="headings", selectmode="extended")
+        for col, w, label in (("prefix", 170, "Name group"), ("prefabs", 70, "Models"),
+                              ("with_id", 80, "With ID"), ("examples", 460, "Examples")):
+            tree.heading(col, text=label)
+            tree.column(col, width=w, anchor="w")
+        sb = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
+        for g in groups:
+            tree.insert("", "end", iid=g["prefix"],
+                        values=(g["prefix"], g["prefabs"], g["with_id"], ", ".join(g["examples"])))
+        tree.selection_set([g["prefix"] for g in groups
+                            if (g["selected"] if chosen_before else g["with_id"] > 0)])
+        bar = ttk.Frame(win, padding=8)
+        bar.pack(fill="x")
+
+        def apply(prefixes: list[str]) -> None:
+            from aniimo_pal.catalog.rules import update_rules_file
+
+            try:
+                update_rules_file(ws.catalog_rules, include_name_prefixes=prefixes)
+            except Exception as exc:  # report, never crash the GUI
+                messagebox.showerror(TITLE, str(exc), parent=win)
+                return
+            win.destroy()
+            self.run_scan(("catalog",))
+
+        ttk.Button(bar, text="Use selected groups", style="Accent.TButton",
+                   command=lambda: apply(list(tree.selection()))).pack(side="left")
+        ttk.Button(bar, text="Show all groups", command=lambda: apply([])).pack(side="left", padx=6)
+        ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right")
+        self.group_dialog = win
 
     def create_project(self) -> None:
         key = self.selected_species()
@@ -600,7 +718,7 @@ class StudioApp:
     @staticmethod
     def _check(code: int) -> None:
         if code != 0:
-            raise RuntimeError("the step did not complete; see the log")
+            raise steps.StepFailed("the step did not complete; the reason is shown in the Log tab")
 
     def decide(self, action: str) -> None:
         path = self.current_creature_file()
@@ -632,6 +750,28 @@ class StudioApp:
         if not path:
             messagebox.showinfo(TITLE, "Create a project for this creature first.")
             return
+        full = steps.with_prerequisites(path.parent, which)
+        if full != which:
+            extra = [steps.STEP_LABELS[s] for s in full if s not in which]
+            if not messagebox.askyesno(TITLE, "This needs earlier steps that have not run yet: "
+                                       f"{', '.join(extra)}.\n\nRun them first?"):
+                return
+            which = full
+        include_proposed = False
+        if any(s in which for s in ("extract", "primary", "project", "convert")):
+            from aniimo_pal.creature.model import load_creature
+            from aniimo_pal.creature.workflow import pending
+
+            c = load_creature(path)
+            open_items = len(pending(c))
+            if c.get("status") == "draft" and open_items:
+                if not messagebox.askyesno(TITLE, (
+                        f"{open_items} asset links found automatically are still waiting for your review "
+                        "(Assets tab, marked ★).\n\nYes: continue now and use the proposed links too "
+                        "(they stay marked as proposed; you can review them later).\nNo: review them first.")):
+                    self.creature_sub.select(1)
+                    return
+                include_proposed = True
         needs = {"primary": "assetripper", "project": "assetripper", "convert": "blender", "preview": "blender"}
         for step in which:
             tool = needs.get(step)
@@ -639,9 +779,11 @@ class StudioApp:
                 messagebox.showwarning(TITLE, f"{tool.capitalize()} is not installed yet (Setup tab).")
                 return
         r = self.runner()
-        builders = {"extract": lambda: r.cmd_extract(path), "primary": lambda: r.cmd_assetripper(path, "primary"),
-                    "project": lambda: r.cmd_assetripper(path, "project"), "convert": lambda: r.cmd_convert(path),
-                    "preview": lambda: r.cmd_preview(path)}
+        ip = include_proposed
+        builders = {"extract": lambda: r.cmd_extract(path, ip),
+                    "primary": lambda: r.cmd_assetripper(path, "primary", ip),
+                    "project": lambda: r.cmd_assetripper(path, "project", ip),
+                    "convert": lambda: r.cmd_convert(path, ip), "preview": lambda: r.cmd_preview(path)}
 
         def job():
             for step in which:

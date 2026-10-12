@@ -196,3 +196,56 @@ def test_clip_fitting_many_skeletons_is_ambiguous_not_attached_everywhere(tmp_pa
     cat = _catalog_for(tmp_path, b, CatalogRules(max_binding_match_species=4))
     assert cat["summary"]["ambiguous_clip_count"] == 0
     assert all([a["name"] for a in s["animations"]] == ["Shared_Run"] for s in cat["species"])
+
+
+def _parmon_game(tmp_path):
+    b = ub.SerializedBuilder()
+    ub.add_creature(b, "P_Parmon_10025", bones=ub.DEFAULT_BONES, clips=["Idle"])
+    ub.add_creature(b, "Eff_Parmon_Skill_Ex", bones=ub.DEFAULT_BONES, clips=[], with_controller=False)
+    (tmp_path / "a.uab").write_bytes(ub.bundle(b.build(), "CAB-a"))
+    b2 = ub.SerializedBuilder()
+    ub.add_creature(b2, "P_Parmon_10503", bones=ub.DEFAULT_BONES, clips=["Idle"])
+    (tmp_path / "aexp_tcpm_10503_sleepybear_tga_0_64955d0aa83ce0a5305247b81e407573.uab").write_bytes(
+        ub.bundle(b2.build(), "CAB-b"))
+    return build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
+
+
+def test_id_numbers_keep_species_apart_and_codename_is_guessed(tmp_path):
+    cat = build_catalog(_parmon_game(tmp_path))
+    by_key = {s["key"]: s for s in cat["species"]}
+    assert set(by_key) == {"p_parmon_10025", "p_parmon_10503", "eff_parmon_skill_ex"}
+    code = by_key["p_parmon_10503"]["codename"]
+    assert code["value"] == "sleepybear" and code["provenance"] == "inferred" and code["id"] == "10503"
+    assert by_key["p_parmon_10025"]["codename"] is None and by_key["eff_parmon_skill_ex"]["codename"] is None
+    groups = {g["prefix"]: g for g in cat["summary"]["name_groups"]}
+    assert groups["p_parmon"]["prefabs"] == 2 and groups["p_parmon"]["with_id"] == 2
+    assert groups["eff_parmon"]["with_id"] == 0 and all(g["selected"] for g in groups.values())
+
+
+def test_name_prefix_filter_keeps_only_chosen_groups(tmp_path):
+    doc = _parmon_game(tmp_path)
+    cat = build_catalog(doc, CatalogRules(include_name_prefixes=["p_parmon"]))
+    assert sorted(s["key"] for s in cat["species"]) == ["p_parmon_10025", "p_parmon_10503"]
+    assert cat["summary"]["prefabs_filtered_out"] == 1
+    assert {g["prefix"]: g["selected"] for g in cat["summary"]["name_groups"]} == {"p_parmon": True,
+                                                                                  "eff_parmon": False}
+    cat = build_catalog(doc, CatalogRules(exclude_name_prefixes=["p_parmon_10025"]))
+    assert sorted(s["key"] for s in cat["species"]) == ["eff_parmon_skill_ex", "p_parmon_10503"]
+
+
+def test_rules_file_prefixes_are_normalised(tmp_path):
+    f = tmp_path / "rules.toml"
+    f.write_text('[catalog]\ninclude_name_prefixes = ["P_Parmon", "NG-P-Parmon"]\n')
+    assert load_rules(f).include_name_prefixes == ["p_parmon", "ng_p_parmon"]
+
+
+def test_update_rules_file_round_trips(tmp_path):
+    from aniimo_pal.catalog.rules import update_rules_file
+
+    f = tmp_path / "r.toml"
+    f.write_text('[catalog]\nmin_binding_ratio = 0.9\n[catalog.variant_keywords]\nshiny = ["glow"]\n')
+    rules = update_rules_file(f, include_name_prefixes=["P_Parmon", "m_monster"])
+    assert rules.include_name_prefixes == ["p_parmon", "m_monster"]
+    assert rules.min_binding_ratio == 0.9 and rules.variant_keywords["shiny"] == ["glow"]
+    assert load_rules(f) == rules
+    assert update_rules_file(tmp_path / "new.toml", include_name_prefixes=[]).include_name_prefixes == []

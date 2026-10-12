@@ -45,8 +45,16 @@ that overlaps its own data folder.
    meshes (plus what they use) in detail, in parallel; the status bar shows
    progress and the estimated time left.
 4. **Creatures:**
+   - *Choose creature groups…*: every rigged model is grouped by the start
+     of its name (e.g. `p_parmon`, `m_monster`, `eff_parmon`, `m_item`); pick
+     the groups that are creatures. Groups whose names carry ID numbers are
+     suggested. The choice is saved as `workspace/catalog_rules.toml` and the
+     list is rebuilt. Search filters by name, ID and codename guess;
    - pick a creature → *Create project* → review assets (confirm/reject
-     proposals);
+     proposals). Steps can also run before the review: the Studio asks and
+     then uses the proposed links (they stay marked as proposed);
+   - a step that needs earlier ones (the preview needs the converted model,
+     conversion needs the AssetRipper exports) offers to run them first;
    - *Run all steps*: extract → AssetRipper (models + Unity project) →
      convert to FBX → build 3D preview;
    - the **3D preview** tab shows every variant side by side (Normal, each
