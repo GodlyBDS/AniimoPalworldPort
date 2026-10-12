@@ -20,6 +20,7 @@ from aniimo_pal.errors import ToolkitError
 from aniimo_pal.log import setup_logging
 
 EXIT_OK, EXIT_CHECK_FAILED, EXIT_USAGE = 0, 1, 2
+EXIT_INCOMPLETE = 3  # a result was written but is not complete (e.g. model without textures or animations)
 
 
 def _print_json(data: Any) -> None:
@@ -412,9 +413,20 @@ def cmd_creature_convert(args: argparse.Namespace, config: Config) -> int:
             print(f"    {n} x {reason}")
         for e in clip_errors[:8]:
             print(f"    e.g. {e['name']}")
+    comp = report["completeness"]
+    print(f"geometry: {comp['geometry']['status']}"
+          + (f" (missing: {', '.join(comp['geometry']['missing_parts'][:6])})" if comp["geometry"]["missing_parts"] else ""))
+    print(f"materials/textures: {comp['materials']['status']}")
+    for u in comp["materials"]["untextured_parts"][:8]:
+        print(f"    no texture on {u['part']}: {u['reason']}")
+    print(f"animations: {comp['animations']['status']} ({comp['animations']['converted']} of "
+          f"{comp['animations']['in_project']})")
+    print("ready for the next porting step: " + ("yes" if comp["ready_for_next_step"] else "NO"))
     mesh_failed = any(m["status"] == "error" for m in report["meshes"])
-    # Missing animations do not fail the step: a rigged model without clips is still a result.
-    return EXIT_OK if s["meshes_ok"] and not mesh_failed else EXIT_CHECK_FAILED
+    if not s["meshes_ok"] or mesh_failed:
+        return EXIT_CHECK_FAILED
+    # Geometry works but textures or animations are missing: a result, not a complete port.
+    return EXIT_OK if comp["ready_for_next_step"] else EXIT_INCOMPLETE
 
 
 def cmd_creature_preview(args: argparse.Namespace, config: Config) -> int:
@@ -437,7 +449,11 @@ def cmd_creature_preview(args: argparse.Namespace, config: Config) -> int:
         if not blender:
             raise ToolkitError("--open needs a Blender executable (--blender or config [tools].blender)")
         subprocess.Popen([blender, report["blend"]])
-    return EXIT_OK
+    untextured = [v for v in report["variants"] if v.get("missing_textures") or "NO TEXTURE" in v["label"]]
+    for v in untextured:
+        print(f"  WARNING {v['label']}: parts without texture: "
+              + (", ".join(f"{m['part']} ({m['reason']})" for m in v.get("missing_textures", [])[:4]) or "all"))
+    return EXIT_INCOMPLETE if untextured else EXIT_OK
 
 
 def cmd_inventory(args: argparse.Namespace, config: Config) -> int:
@@ -508,6 +524,62 @@ def cmd_objects_find(args: argparse.Namespace, config: Config) -> int:
     return EXIT_OK
 
 
+def _probe_out(report: dict[str, Any], output: str | None, lines: list[str]) -> int:
+    from aniimo_pal.manifest.io import write_json_atomic
+
+    for line in lines:
+        print(line)
+    if output:
+        write_json_atomic(report, output)
+        print(f"report: {output}")
+    else:
+        _print_json(report)
+    return EXIT_OK
+
+
+def cmd_probe_prefab(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.probe import probe_prefab
+
+    objects = _read_json(args.objects) if args.objects else None
+    rep = probe_prefab(args.root, name=args.name, container=args.container, object_ref=args.object_ref,
+                       objects_doc=objects)
+    s = rep["summary"]
+    lines = [f"{rep['name']} ({rep['object']}) in {rep['container']}",
+             f"renderers {s['renderers']}: mesh resolved {s['renderers_with_mesh']}, empty mesh slot "
+             f"{s['renderers_with_empty_mesh_slot']}; material slots {s['material_slots']} (resolved "
+             f"{s['material_slots_resolved']}, empty {s['material_slots_empty']})"]
+    for r in rep["renderers"]:
+        mats = ", ".join(f"{m.get('name') or m['status']}" for m in r["material_slots"]) or "no material slots"
+        lines.append(f"  {r['path'] or '(root)'}: mesh {(r['mesh'] or {}).get('name') or (r['mesh'] or {}).get('status')}"
+                     f"; materials: {mats}")
+        for m in r["material_slots"]:
+            for t in (m.get("material") or {}).get("texture_slots", []):
+                lines.append(f"      {m.get('name')} . {t['slot']} -> {t.get('name') or t['status']}")
+    for c in rep["components"]:
+        if c.get("reference_count"):
+            lines.append(f"  component {(c.get('script') or {}).get('class_name') or '?'} on {c['path'] or '(root)'}: "
+                         f"{c['reference_count']} references to {', '.join(c['referenced_classes'])}")
+    return _probe_out(rep, args.output, lines)
+
+
+def cmd_probe_clip(args: argparse.Namespace, config: Config) -> int:
+    from aniimo_pal.probe import probe_clip
+
+    objects = _read_json(args.objects) if args.objects else None
+    paths = None
+    if args.creature:
+        paths = [b["path"] for b in (_read_json(args.creature).get("skeleton") or {}).get("bones", [])]
+    rep = probe_clip(args.root, name=args.name, container=args.container, objects_doc=objects, skeleton_paths=paths)
+    st = rep["structure"]
+    lines = [f"{rep['name']} ({rep['object']}): {st['bindings']} bindings need {st['curves_needed_by_bindings']} curves; "
+             f"known curve sets hold {st['curves_in_known_sets']}",
+             "curve sets: " + ", ".join(f"{k}={v['curve_count']}{'' if v['known'] else ' (unknown format)'}"
+                                        for k, v in st["curve_sets"].items()),
+             f"decoder: {rep['decoder']['status']}" + (f" - {rep['decoder'].get('reason')}"
+                                                       if rep["decoder"].get("reason") else "")]
+    return _probe_out(rep, args.output, lines)
+
+
 def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.catalog import build_catalog, load_rules
     from aniimo_pal.catalog.names import load_names
@@ -535,6 +607,13 @@ def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
             print(f"  unresolved: {e}")
     for m in d["missing_mesh_files"]:
         print(f"  meshes not in the object list: {m['count']} in {m['cab']} ({m['container'] or 'container not read'})")
+    cov = s.get("id_coverage")
+    if cov:
+        print(f"creature IDs with a model bundle: {cov['ids_with_model_bundle']}, in the catalog {cov['in_catalog']}"
+              + (f" (model only: {', '.join(cov['model_only'])})" if cov["model_only"] else "")
+              + f", missing {len(cov['missing'])}")
+        for m in cov["missing"]:
+            print(f"  missing {m['id']} ({m['codename'] or '?'}): {m['reason']}")
     print(f"catalog:    {args.output}")
     return EXIT_OK
 
@@ -759,6 +838,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=200)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_objects_find)
+
+    probe = sub.add_parser("probe", help="read one original bundle again and print every link as stored (evidence)")
+    psub = probe.add_subparsers(dest="probe_command", required=True, metavar="WHAT")
+    p = psub.add_parser("prefab", help="prefab -> renderers -> mesh/material slots -> shader/texture slots -> textures, "
+                                       "plus every component's object references")
+    p.add_argument("--root", required=True, help="game folder the containers are relative to")
+    p.add_argument("--name", required=True, help="GameObject name, e.g. P_Parmon_10351")
+    p.add_argument("--container", help="container path relative to ROOT")
+    p.add_argument("--object", dest="object_ref", help="object id (cab:path_id) from the object list")
+    p.add_argument("--objects", help="objects.json: follows references into other containers")
+    p.add_argument("-o", "--output", help="write the JSON report here (default: print a short summary + JSON)")
+    p.set_defaults(func=cmd_probe_prefab)
+    p = psub.add_parser("clip", help="curve sets, field layout and decoder verdict of one AnimationClip")
+    p.add_argument("--root", required=True)
+    p.add_argument("--name", required=True, help="clip name, e.g. Ani_Parmon_10052_Attack01")
+    p.add_argument("--container", required=True, help="container path relative to ROOT")
+    p.add_argument("--objects", help="objects.json (optional)")
+    p.add_argument("--creature", help="creature.json: names bound bones through its skeleton")
+    p.add_argument("-o", "--output")
+    p.set_defaults(func=cmd_probe_clip)
 
     catalog = sub.add_parser("catalog", help="creature catalog built from an object inventory")
     catsub = catalog.add_subparsers(dest="catalog_command", required=True, metavar="ACTION")

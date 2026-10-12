@@ -13,6 +13,8 @@ from aniimo_pal.errors import ToolkitError
 
 def variant_label(form: str, appearance: str) -> str:
     base = "Prismana" if form == "prismana" else "Normal"
+    if appearance == "shiny":
+        return f"{'Prismana ' if base == 'Prismana' else ''}Shiny (look not identified)"
     if appearance.startswith("shiny_"):
         return f"{base} Shiny {int(appearance.split('_')[1])}" if base == "Prismana" else f"Shiny {int(appearance.split('_')[1])}"
     return base
@@ -55,7 +57,7 @@ def _main_texture(creature: dict[str, Any], creature_dir: Path, form: str, appea
             continue
         f_ok = a.get("form") in (form, "shared")
         app = a.get("appearance", "any")
-        a_ok = app in (appearance, "any") or (app == "shiny" and appearance.startswith("shiny_"))
+        a_ok = app in (appearance, "any") or (app == "shiny" and appearance.startswith("shiny"))
         if not (f_ok and a_ok):
             continue
         score = (a.get("form") == form) + (app == appearance)
@@ -84,14 +86,31 @@ def preview_job(creature: dict[str, Any], creature_dir: str | Path) -> dict[str,
                      key=lambda p: (order[p["form"]], p.get("appearance") != "standard", p.get("appearance", "")))
     variants, seen = [], set()
     for p in prefabs:
-        key = (p["form"], p.get("appearance", "standard"))
+        app = p.get("appearance", "standard")
+        # Unidentified Shiny prefabs: one preview per distinct material set (the data may hold several looks).
+        sig = tuple(sorted({m for part in p.get("parts") or [] for m in part.get("materials") or []})) \
+            if app == "shiny" else None
+        key = (p["form"], app, sig)
         if key in seen:
             continue
         seen.add(key)
-        variants.append({"label": variant_label(*key), "texture": _main_texture(creature, creature_dir, *key),
-                         "part_textures": _part_textures(creature, creature_dir, p)})
+        label = variant_label(p["form"], app)
+        if app == "shiny" and sum(1 for q in prefabs if q.get("appearance") == "shiny" and q["form"] == p["form"]) > 1:
+            label += f" [{p.get('name')}]"
+        part_textures = _part_textures(creature, creature_dir, p)
+        texture = _main_texture(creature, creature_dir, p["form"], app)
+        missing = [{"part": part.get("mesh_name"), "reason": part.get("materials_missing") or
+                    "material has no extracted texture"}
+                   for part in p.get("parts") or [] if part.get("mesh_name") not in part_textures
+                   and part.get("state") in (None, "default")]
+        if not part_textures and not texture:
+            label += " - NO TEXTURE"
+        variants.append({"label": label, "prefab": p.get("name"), "texture": texture, "part_textures": part_textures,
+                         "missing_textures": missing})
     if not variants:
-        variants = [{"label": "Normal", "texture": _main_texture(creature, creature_dir, "normal", "standard")}]
+        texture = _main_texture(creature, creature_dir, "normal", "standard")
+        variants = [{"label": "Normal" + ("" if texture else " - NO TEXTURE"), "texture": texture,
+                     "missing_textures": []}]
     out = creature_dir / "preview"
     return {"fbx": str(creature_dir / fbx), "variants": variants, "output_blend": str(out / "preview.blend"),
             "render": str(out / "preview.png"), "report": str(out / "preview-report.json")}

@@ -62,6 +62,10 @@ class CatalogRules:
     # Only prefabs whose name starts with one of these token prefixes are candidates (empty: all).
     include_name_prefixes: list[str] = field(default_factory=list)
     exclude_name_prefixes: list[str] = field(default_factory=list)
+    # Regex on container file names that marks a creature's model bundle, with a named group "id" (and optionally
+    # "codename"), e.g. Aniimo's ar_char_parm_10371_bornfox_fbx_<hash>.uab. Used to report which creature IDs
+    # the game files contain but the catalog lacks, and to fall back to the model when no gameplay prefab passes.
+    model_bundle_pattern: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -95,6 +99,15 @@ def load_rules(path: str | Path | None) -> CatalogRules:
             if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
                 raise ConfigError(f"catalog.{key} must be a list of strings")
             value = [name_key(s) for s in value] if key.endswith("_name_prefixes") else [s.lower() for s in value]
+        elif isinstance(default, str):
+            if not isinstance(value, str):
+                raise ConfigError(f"catalog.{key} must be a string")
+            if key.endswith("_pattern") and value:
+                try:
+                    if "id" not in re.compile(value).groupindex:
+                        raise ConfigError(f"catalog.{key} needs a named group (?P<id>...)")
+                except re.error as exc:
+                    raise ConfigError(f"catalog.{key} is not a valid regex: {exc}") from exc
         elif isinstance(default, bool):
             if not isinstance(value, bool):
                 raise ConfigError(f"catalog.{key} must be a boolean")
@@ -168,17 +181,25 @@ def _toml_value(v: Any) -> str:
     raise TypeError(f"cannot write {type(v).__name__} to TOML")
 
 
-def update_rules_file(path: str | Path, **changes: Any) -> CatalogRules:
+def _read_section(path: Path) -> dict[str, Any]:
+    with open(path, "rb") as fh:
+        data = tomllib.load(fh)
+    return dict(data.get("catalog", data))
+
+
+def update_rules_file(path: str | Path, base: str | Path | None = None, **changes: Any) -> CatalogRules:
     """Set rule values in a rules TOML file (created if missing), keeping its other settings.
 
+    ``base``: a rules file (e.g. the game preset) whose settings fill keys the file does not set yet.
     Comments in an existing file are not preserved. Returns the resulting rules.
     """
     p = Path(path)
     section: dict[str, Any] = {}
     if p.is_file():
-        with open(p, "rb") as fh:
-            data = tomllib.load(fh)
-        section = dict(data.get("catalog", data))
+        section = _read_section(p)
+    if base is not None and Path(base).is_file():
+        for key, value in _read_section(Path(base)).items():
+            section.setdefault(key, value)
     section.update(changes)
     known = set(asdict(CatalogRules()))
     if set(section) - known:

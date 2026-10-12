@@ -63,7 +63,7 @@ def test_creature_export_with_fake(pipeline, monkeypatch):
     assert report["containers"] == ["StreamingAssets/foxlet.bundle"]
     tex = next(a for a in c["assets"] if a["name"] == "Foxlet_Albedo")
     assert tex["assetripper"]["primary"] == ["extract/assetripper/primary/Assets/Texture2D/Foxlet_Albedo.png"]
-    shiny = next(p for p in c["prefabs"] if p["appearance"] == "shiny_01")
+    shiny = next(p for p in c["prefabs"] if p["appearance"] == "shiny")
     assert shiny["assetripper"]["primary"][0].endswith("Foxlet_Shiny.glb")
     with pytest.raises(ToolkitError, match="--replace"):
         assetripper_export_creature(c, path.parent, pipeline["root"], FAKE)

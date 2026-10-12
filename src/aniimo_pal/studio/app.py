@@ -443,6 +443,14 @@ class StudioApp:
             lines.append(f"Creatures found: {cs['species_count']} ({cs.get('game_id_count', '?')} distinct creature IDs, "
                          f"from {cs['prefab_count']} prefabs; {cs.get('prefabs_filtered_out', 0)} other rigged "
                          "models such as effects, items and NPCs not shown)")
+            cov = cs.get("id_coverage")
+            if cov:
+                lines.append(f"Creature IDs with a model in the game files: {cov['ids_with_model_bundle']}; "
+                             f"in the list: {cov['in_catalog']}"
+                             + (f" ({len(cov['model_only'])} from the model only)" if cov["model_only"] else "")
+                             + f"; missing: {len(cov['missing'])}")
+                for m in cov["missing"][:12]:
+                    lines.append(f"    {m['id']} ({m['codename'] or '?'}): {m['reason']}")
             if steps.is_older(ws.catalog, ws.objects):
                 lines.append("  This creature list is older than the object list: click '3. Find creatures'.")
             d = cs.get("diagnostics")
@@ -649,6 +657,18 @@ class StudioApp:
                     reason = f": {m.get('error')}" if m.get("status") != "ok" else ""
                     attach = f" (attached to {m['attached_to']})" if m.get("attached_to") else ""
                     info.append(f"  {m.get('status', '?').upper()} {m.get('mesh')}{attach}{reason}")
+                comp = conv.get("completeness")
+                if comp:
+                    info.append(f"Port status: geometry {comp['geometry']['status']}, textures "
+                                f"{comp['materials']['status']}, animations {comp['animations']['status']} "
+                                f"({comp['animations'].get('converted', 0)} of {comp['animations'].get('in_project', 0)})"
+                                f"  ·  ready for the next step: {'yes' if comp['ready_for_next_step'] else 'NO'}")
+                    for u in comp["materials"]["untextured_parts"][:6]:
+                        info.append(f"  no texture on {u['part']}: {u['reason']}")
+                errs = conv.get("clip_errors") or []
+                if errs:
+                    first = errs[0]["error"]
+                    info.append(f"  animations not converted: {len(errs)} (e.g. {first})")
             for ctx in CONTEXTS:
                 p = outcome_probabilities(c["variants"], ctx)
                 info.append(f"{ctx}: Shiny {one_in(p['any_shiny'])}, Prismana {one_in(p['any_prismana'])}, "
@@ -761,7 +781,8 @@ class StudioApp:
             from aniimo_pal.catalog.rules import update_rules_file
 
             try:
-                update_rules_file(ws.catalog_rules, include_name_prefixes=prefixes)
+                update_rules_file(ws.catalog_rules, base=self.layout.root / "config" / "catalog_rules_aniimo.toml",
+                                  include_name_prefixes=prefixes)
             except Exception as exc:  # report, never crash the GUI
                 messagebox.showerror(TITLE, str(exc), parent=win)
                 return
@@ -788,6 +809,8 @@ class StudioApp:
 
     @staticmethod
     def _check(code: int) -> None:
+        if code == steps.EXIT_INCOMPLETE:
+            return  # result written but incomplete; the step printed what is missing
         if code != 0:
             raise steps.StepFailed("the step did not complete; the reason is shown in the Log tab")
 

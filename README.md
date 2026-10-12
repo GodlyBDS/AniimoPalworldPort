@@ -80,11 +80,12 @@ aniimo-pal creature convert ws/creatures/aniimo_foxlet/creature.json --blender "
 | `catalog build / list / show` | Creature catalog with automatic asset association |
 | `creature init / review / associate / validate / roll` | Resumable per-creature projects; exact wild/egg odds per regional form (`roll --biome`) |
 | `creature skins` | Record cosmetic (gacha) skins and choose which ones the Palworld mod offers (base only / all / selected) |
-| `creature extract` | UnityPy export of confirmed assets (source hashes re-checked) |
+| `creature extract` | UnityPy export of confirmed assets (source hashes re-checked); mesh GLBs and decoded animation clips (compiled streamed/dense/constant curves) |
 | `creature export-assetripper` | Headless AssetRipper export, mapped back to the creature's assets |
 | `objects` | Search the object index, e.g. for stat, element or job data tables |
 | `systems` | Show the (versioned, currently unverified) Aniimo/Palworld vocabularies used for validation |
-| `creature convert` | Skin assembly + Blender job: rigged FBX with retargeted animation clips and a report |
+| `creature convert` | Skin assembly + Blender job: rigged FBX with retargeted animation clips and a report that grades geometry, textures and animations separately (exit code `3` = result written but incomplete) |
+| `probe prefab / clip` | Read one original bundle again and print every link as stored: renderer → mesh/material slots → shader texture slots → textures, components and their references; a clip's curve sets, field layout and decoder verdict |
 | `creature preview` | Blender scene with every variant side by side and every animation on the timeline (+ still image) |
 | `doctor`, `config` | Tool discovery; effective configuration |
 
@@ -93,7 +94,7 @@ Global options: `--config FILE` ([config/default.toml](config/default.toml)),
 clip-role keywords, matching thresholds) are in
 [config/catalog_rules.toml](config/catalog_rules.toml) and can be overridden
 with `catalog build --rules`. Exit codes: `0` ok, `1` check failed, `2`
-usage/config error.
+usage/config error, `3` result written but incomplete (e.g. a model without textures or animations).
 
 ## Install
 

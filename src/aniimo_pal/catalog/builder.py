@@ -99,7 +99,7 @@ def _ref_entry(idx: ObjectIndex, obj: dict[str, Any]) -> dict[str, Any]:
 def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rules: CatalogRules) -> dict[str, Any] | None:
     renderer_classes = RENDERER_CLASSES + (STATIC_RENDERER_CLASSES if rules.include_static_meshes else ())
     nodes = h.subtree(root)
-    renderers, animators, legacy_anims = [], [], []
+    renderers, animators, legacy_anims, behaviours = [], [], [], []
     path_of_transform: dict[str, str] = {}
     local_trs: dict[str, dict[str, Any]] = {}
     own_active = {path: (go.get("info") or {}).get("active") is not False for go, path in nodes}
@@ -117,6 +117,8 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
                 animators.append(comp)
             elif comp["class"] == "Animation":
                 legacy_anims.append(comp)
+            elif comp["class"] == "MonoBehaviour" and comp["refs"]:
+                behaviours.append(comp)
     if not renderers:
         return None
 
@@ -146,12 +148,18 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
                 if m:
                     ordered[int(m.group(1))] = path_of_transform.get(ref["target"])
             root_bone = idx.ref(r, "m_RootBone")
+            chain = _material_chain(idx, r, go, behaviours)
+            for mid in chain["materials"]:  # materials assigned through a component belong to the prefab too
+                if mid not in {x["id"] for x in materials}:
+                    materials.append(idx.by_id[mid])
             skins.append({"renderer": r["id"], "mesh": mesh["id"] if mesh else None,
                           "mesh_name": mesh.get("name") if mesh else None,
                           "renderer_path": path_of_transform.get((h.go_transform.get(go["id"]) or {}).get("id")),
                           "bones": [ordered.get(i) for i in range(max(ordered) + 1)] if ordered else [],
                           "root_bone": path_of_transform.get(root_bone["id"]) if root_bone else None,
-                          "materials": [m["id"] for m in idx.refs(r, "m_Materials")],
+                          "materials": chain["materials"],
+                          "materials_source": chain["source"], "materials_missing": chain["missing"],
+                          "component_mesh": chain["mesh"],
                           # Hidden in the prefab (this object or a parent inactive): an alternative state the
                           # game switches on at runtime, e.g. Grizbo's "Rampage" fur.
                           "active": _active_in_prefab(own_active, path_of_transform.get(
@@ -186,6 +194,100 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
         "bone_paths": sorted(set(bones.values())), "skeleton_paths": skeleton_paths,
         "controllers": controllers, "avatars": avatars, "clips": clips, "local_trs": local_trs, "skins": skins,
     }
+
+
+def _element_key(field: str) -> str:
+    """``m_Parts[3].materials[0]`` -> ``m_Parts[3]``: the list element a component field belongs to."""
+    head, sep, _tail = field.rpartition("].")
+    return head + "]" if sep else ""
+
+
+def _cab_owners(idx: ObjectIndex) -> dict[str, str]:
+    owners = getattr(idx, "_cab_owner_cache", None)
+    if owners is None:
+        owners = {sf["cab"]: c["path"] for c in idx.doc.get("containers", []) for sf in c.get("serialized_files", [])}
+        idx._cab_owner_cache = owners
+    return owners
+
+
+def _missing_targets(idx: ObjectIndex, refs: list[dict[str, Any]]) -> list[str]:
+    owners = _cab_owners(idx)
+    out = []
+    for ref in refs:
+        if ref["target"] in idx.by_id:
+            continue
+        cab = ref["target"].rsplit(":", 1)[0]
+        out.append(f"{ref['target']} (in {owners[cab]}, object not recorded)" if cab in owners
+                   else f"{ref['target']} (serialized file {cab} not in any scanned container)")
+    return out
+
+
+def _material_chain(idx: ObjectIndex, r: dict[str, Any], go: dict[str, Any],
+                    behaviours: list[dict[str, Any]]) -> dict[str, Any]:
+    """Where a renderer's materials come from, with evidence; why they are missing otherwise.
+
+    1. the renderer's own ``m_Materials`` (verified);
+    2. a component on the prefab whose list element references this renderer (or its GameObject) together
+       with materials / a mesh, e.g. ``m_Parts[3].renderer`` + ``m_Parts[3].materials[0]`` (verified link,
+       the component's meaning is inferred from it);
+    3. otherwise ``missing`` says which case applies: no material slots at all, or slots pointing at objects
+       the inventory did not record (and where they live).
+    """
+    raw = [ref for ref in r["refs"] if ref["field"] == "m_Materials" or ref["field"].startswith("m_Materials[")]
+    resolved = [m["id"] for m in idx.refs(r, "m_Materials") if m["class"] == "Material"]
+    out: dict[str, Any] = {"materials": resolved, "source": "renderer" if resolved else None, "missing": None,
+                           "mesh": None}
+    for mb in behaviours:
+        keys = {_element_key(ref["field"]) for ref in mb["refs"] if ref["target"] in (r["id"], go["id"])}
+        if not keys:
+            continue
+        renderer_refs = [ref for ref in mb["refs"]
+                         if (idx.get(ref["target"]) or {}).get("class") in RENDERER_CLASSES + STATIC_RENDERER_CLASSES]
+        script = idx.ref(mb, "m_Script")
+        label = ((script or {}).get("info") or {}).get("class_name") or (script or {}).get("name") or "component"
+        for key in sorted(keys):
+            if key == "" and len({ref["target"] for ref in renderer_refs}) > 1:
+                continue  # top-level fields of a component that lists several renderers: no pairing
+            group = [ref for ref in mb["refs"] if _element_key(ref["field"]) == key
+                     and ref["field"] not in ("m_GameObject", "m_Script")]
+            mats = [ref["target"] for ref in group if (idx.get(ref["target"]) or {}).get("class") == "Material"]
+            meshes = [ref["target"] for ref in group if (idx.get(ref["target"]) or {}).get("class") == "Mesh"]
+            evidence = f"component:{label}{'.' + key if key else ''}"
+            if mats and not out["materials"]:
+                out.update(materials=mats, source=evidence)
+            if len(meshes) == 1 and out["mesh"] is None:
+                out["mesh"] = {"object": meshes[0], "evidence": evidence}
+            if not mats and not out["materials"]:
+                missing = _missing_targets(idx, [ref for ref in group if ref["target"] not in (r["id"], go["id"])])
+                if missing:
+                    out["missing"] = f"{evidence} references objects not in the object list: {', '.join(missing[:3])}"
+    if not out["materials"] and out["missing"] is None:
+        if not raw:
+            out["missing"] = ("no material assigned in the prefab (slots empty or absent) and no component on the "
+                              "prefab references one for this renderer")
+        else:
+            unresolved = _missing_targets(idx, raw)
+            out["missing"] = (f"material slots point at objects the inventory did not record: {', '.join(unresolved[:3])}"
+                              if unresolved else "material slots point at objects that are not materials")
+    return out
+
+
+def _look_groups(idx: ObjectIndex, prefabs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group prefabs by the set of textures (else materials) their parts use."""
+    groups: dict[str, dict[str, Any]] = {}
+    for p in prefabs:
+        mats = sorted({m for part in p["parts"] for m in part["materials"]})
+        textures = sorted({t["id"] for m in mats if (mo := idx.get(m)) for _slot, t in _material_textures(idx, mo)})
+        if textures:
+            sig = "textures:" + ",".join(textures)
+        elif mats:
+            sig = "materials:" + ",".join(mats)
+        else:
+            sig = "no-material-data"
+        g = groups.setdefault(sig, {"signature": sig if sig == "no-material-data" else sig.split(":", 1)[0],
+                                    "prefabs": [], "textures": [(idx.get(t) or {}).get("name") for t in textures][:8]})
+        g["prefabs"].append(p["name"])
+    return list(groups.values())
 
 
 def _mark_part_states(skins: list[dict[str, Any]]) -> None:
@@ -258,15 +360,30 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
             all_candidates.append(cand)
     placeholder_stats = _resolve_placeholder_meshes(idx, all_candidates, rules)
     # Prefabs whose only renderers have empty mesh slots and no mesh of that name are not models.
-    all_candidates = [c for c in all_candidates if c["meshes"] or any(
-        u["candidates"] or not u["empty_slot"] for u in c.get("unresolved_parts", []))]
+    no_mesh = [c for c in all_candidates if not (c["meshes"] or any(
+        u["candidates"] or not u["empty_slot"] for u in c.get("unresolved_parts", [])))]
+    all_candidates = [c for c in all_candidates if c not in no_mesh]
+    _assign_game_ids(all_candidates + no_mesh, rules)
+    model_bundles = _model_bundles(objects_doc, rules)
+    for c in all_candidates + no_mesh:
+        if not c["game_id"]:  # a model prefab named without its ID: its bundle names it
+            c["game_id"] = next((gid for gid, info in model_bundles.items()
+                                 if c["root"].get("container") in info["bundles"]), None)
     name_groups = _name_groups(all_candidates, rules)
-    candidates = [c for c in all_candidates if name_selected(c["root"].get("name"), rules)]
+    selected = {id(c) for c in all_candidates if name_selected(c["root"].get("name"), rules)}
+    candidates = [c for c in all_candidates if id(c) in selected]
+    # Creature IDs whose model bundle exists but no selected prefab carries the ID: use the model itself.
+    covered = {c["game_id"] for c in candidates if c["game_id"]}
+    for gid, info in model_bundles.items():
+        if gid not in covered:
+            for c in all_candidates:
+                if id(c) not in selected and c["game_id"] == gid and c["root"].get("container") in info["bundles"]:
+                    c["model_only"] = True
+                    candidates.append(c)
 
     # Group prefabs into species: shared mesh (verified), same game ID (forms), else same skeleton + name stem.
     uf = _UnionFind(len(candidates))
     group_evidence: dict[int, set[str]] = defaultdict(set)
-    _assign_game_ids(candidates, rules)
     by_base: dict[str, list[int]] = defaultdict(list)
     for i, c in enumerate(candidates):
         if c["game_id"]:
@@ -341,6 +458,7 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
             "prefabs_filtered_out": len(all_candidates) - len(candidates),
             "placeholder_meshes": placeholder_stats,
             "name_groups": name_groups,
+            "id_coverage": _id_coverage(objects_doc, rules, model_bundles, species_list, all_candidates, no_mesh),
             "diagnostics": _diagnostics(idx, h, roots, rules),
         },
         "species": species_list,
@@ -350,6 +468,56 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
 
         apply_names(doc, names)
     return doc
+
+
+def _model_bundles(objects_doc: dict[str, Any], rules: CatalogRules) -> dict[str, dict[str, Any]]:
+    """{creature id: {codename, bundles}} from container names matching ``rules.model_bundle_pattern``."""
+    if not rules.model_bundle_pattern:
+        return {}
+    pattern = re.compile(rules.model_bundle_pattern, re.IGNORECASE)
+    out: dict[str, dict[str, Any]] = {}
+    for c in objects_doc.get("containers", []):
+        m = pattern.search(c["path"].replace("\\", "/").rsplit("/", 1)[-1])
+        if m:
+            entry = out.setdefault(m.group("id"), {"codename": None, "bundles": []})
+            entry["bundles"].append(c["path"])
+            if "codename" in pattern.groupindex and m.group("codename"):
+                entry["codename"] = m.group("codename")
+    return out
+
+
+def _id_coverage(objects_doc: dict[str, Any], rules: CatalogRules, model_bundles: dict[str, dict[str, Any]],
+                 species_list: list[dict[str, Any]], all_candidates: list[dict[str, Any]],
+                 no_mesh: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Creature IDs that have a model bundle in the game files, compared with the catalog (with reasons)."""
+    if not rules.model_bundle_pattern:
+        return None
+    containers = {c["path"]: c for c in objects_doc.get("containers", [])}
+    in_catalog = {s["game_id"] for s in species_list if s.get("game_id")}
+    model_only = sorted(s["game_id"] for s in species_list if s.get("model_only"))
+    missing = []
+    for gid, info in sorted(model_bundles.items()):
+        if gid in in_catalog:
+            continue
+        filtered = sorted({c["root"].get("name") for c in all_candidates if c["game_id"] == gid})
+        meshless = sorted({c["root"].get("name") for c in no_mesh if c["game_id"] == gid})
+        records = [containers[b] for b in info["bundles"] if b in containers]
+        skinned = sum((r.get("class_counts") or {}).get("SkinnedMeshRenderer", 0) for r in records)
+        if filtered:
+            reason = f"rigged prefabs with this ID exist but none passed the name filter: {', '.join(filtered[:4])}"
+        elif meshless:
+            reason = (f"prefab(s) {', '.join(meshless[:4])} found, but their renderers have empty mesh slots and no "
+                      "mesh with the renderer's name exists")
+        elif not records:
+            reason = "model bundle not in the object list (not scanned or not a Unity container)"
+        elif not skinned:
+            reason = "model bundle has no skinned renderer (no rigged model in it)"
+        else:
+            reason = "model bundle has skinned renderers, but no prefab root with them was found"
+        missing.append({"id": gid, "codename": info["codename"], "bundles": info["bundles"][:3], "reason": reason})
+    return {"pattern": rules.model_bundle_pattern, "ids_with_model_bundle": len(model_bundles),
+            "in_catalog": len(set(model_bundles) & in_catalog), "model_only": model_only,
+            "catalog_ids_without_model_bundle": sorted(in_catalog - set(model_bundles)), "missing": missing}
 
 
 def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], rules: CatalogRules) -> dict[str, Any]:
@@ -435,6 +603,15 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
         for s in c["skins"]:
             if s["mesh"] is not None and s["mesh"] not in placeholders:
                 continue
+            comp = s.get("component_mesh")
+            if comp and comp["object"] in idx.by_id:
+                real = idx.by_id[comp["object"]]
+                s.update(placeholder_mesh=s["mesh"], mesh=real["id"], mesh_name=real.get("name"),
+                         mesh_source=comp["evidence"], mesh_provenance="verified-link",
+                         mesh_selection={"criterion": "component reference", "candidates": [real.get("name")]})
+                meshes[real["id"]] = real
+                resolved += 1
+                continue
             go_name = (s.get("renderer_path") or c["root"].get("name") or "").rsplit("/", 1)[-1]
             found = by_name.get(_norm_name(go_name), [])
             by_num: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -446,7 +623,8 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
             pending.append((s, go_name, found, by_num))
         for s, go_name, found, by_num in pending:
             names = {m["name"] for m in found}
-            choice, how = None, "renderer-name"
+            choice, how, selection = None, "renderer-name", {"criterion": "only one mesh with this name",
+                                                             "candidates": sorted(names)}
             if len(names) == 1:
                 choice = found
             elif by_num:
@@ -464,6 +642,14 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
                                own_numbers.get(num, 0), max(_patch_level(m.get("container")) for m in group),
                                votes[num]) for num, group in by_num.items()}
                 ranked = sorted(by_num, key=lambda n: tuple(-x for x in score[n]) + (n,))
+                decided_by = None
+                if len(ranked) > 1:
+                    first, second = score[ranked[0]], score[ranked[1]]
+                    decided_by = next((_SCORE_NAMES[i] for i in range(len(first)) if first[i] != second[i]), None)
+                selection = {"criterion": decided_by, "candidates": [
+                    {"build": n, "names": sorted({m["name"] for m in by_num[n]}),
+                     "containers": sorted({m.get("container") or "?" for m in by_num[n]})[:3],
+                     **dict(zip(_SCORE_NAMES, score[n], strict=True))} for n in ranked[:4]]}
                 if (len(ranked) == 1 or score[ranked[0]] > score[ranked[1]]) and \
                         len({m["name"] for m in by_num[ranked[0]]}) == 1:
                     choice, how = by_num[ranked[0]], "renderer-name+build-number"
@@ -471,12 +657,18 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
                 # The same mesh can sit in an old bundle and its patch: take the newest copy.
                 real = sorted(choice, key=lambda m: (-_patch_level(m.get("container")), m["id"]))[0]
                 s.update(placeholder_mesh=s["mesh"], mesh=real["id"], mesh_name=real["name"],
-                         mesh_source=how, mesh_provenance="inferred")
+                         mesh_source=how, mesh_provenance="inferred", mesh_selection=selection,
+                         # An empty slot or placeholder only shows the mesh is not in the prefab; which mesh the
+                         # game loads is inferred from names, not observed.
+                         mesh_uncertainty="runtime assignment not observed; chosen by renderer name"
+                                          + (f", decided by {selection['criterion']}" if selection.get("criterion")
+                                             and how != "renderer-name" else ""))
                 meshes[real["id"]] = real
                 resolved += 1
             else:
                 s.update(placeholder_mesh=s["mesh"], mesh=None)
                 c.setdefault("unresolved_parts", []).append({"renderer": go_name, "candidates": sorted(names)[:8],
+                                                             "selection": selection if len(names) > 1 else None,
                                                              "state": s.get("state"), "active": s.get("active"),
                                                              "empty_slot": s["placeholder_mesh"] is None})
                 unresolved += 1
@@ -490,6 +682,8 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
 
 
 _MESH_BUILD_NAME = re.compile(r"^(?P<base>.+)_(?P<num>-?\d{6,})$")
+_SCORE_NAMES = ("bone_fit", "bundle_names_prefab_id", "bundle_names_creature_id", "shared_build_number",
+                "patch_level", "parts_with_this_build")
 _PATCH_PREFIX = re.compile(r"^xpt(\d+)_", re.IGNORECASE)
 
 
@@ -678,11 +872,15 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
                         "game_form_index": game_form,
                         # Per skinned part: its mesh and the materials this prefab's renderer uses (textures
                         # differ per variant even when the mesh is shared).
-                        "parts": [{"mesh": s["mesh"], "mesh_name": s["mesh_name"], "materials": s["materials"]}
+                        "parts": [{"mesh": s["mesh"], "mesh_name": s["mesh_name"], "materials": s["materials"],
+                                   "materials_source": s.get("materials_source"),
+                                   "materials_missing": s.get("materials_missing"), "state": s.get("state"),
+                                   "mesh_source": s.get("mesh_source"), "mesh_uncertainty": s.get("mesh_uncertainty")}
                                   for s in c["skins"]],
                         "variant_provenance": "inferred" if hits or game_form else "default",
-                        "variant_evidence": evidence, "_cand": c})
+                        "variant_evidence": evidence, "_cand": c, "_model_only": bool(c.get("model_only"))})
 
+    evidence_groups: list[dict[str, Any]] = []
     for form in ("normal", "prismana"):
         standard = sorted((p for p in prefabs if p["form"] == form and p["appearance"] == STANDARD),
                           key=lambda p: (p["game_form_index"] is not None, len(p["name"] or ""), p["object"]))
@@ -694,12 +892,25 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
                             "extra ones marked 'unclassified'")
         shinies = sorted((p for p in prefabs if p["form"] == form and p["appearance"] == "shiny"),
                          key=lambda p: (p["name"] or "", p["object"]))
-        for i, p in enumerate(shinies, 1):
-            p["appearance"] = f"shiny_{i:02d}"
-            p["variant_evidence"].append("appearance-numbered-by-name-order")
+        # Which of the (Aniimo: 12) Shiny looks a prefab shows is not in its name; P_/NG_/E_ prefixes may be
+        # technical copies of one look. Shiny prefabs keep appearance "shiny" (look unidentified); what the
+        # data does show is whether they use the same or different materials/textures.
+        for p in shinies:
+            p["appearance_identity"] = "unidentified"
+            p["variant_evidence"].append("shiny-keyword; which Shiny look is not identified")
         if shinies:
-            warnings.append(f"{len(shinies)} {form} Shiny prefab(s) numbered by name order (inferred); "
-                            "verify appearance identities against the source data")
+            looks = _look_groups(idx, shinies)
+            evidence_groups.append({"form": form, "prefabs": [p["name"] for p in shinies], "groups": looks})
+            if len(shinies) == 1:
+                verdict = "single Shiny prefab"
+            elif any(g["signature"] == "no-material-data" for g in looks):
+                verdict = "no material data, so it is unknown whether they differ"
+            elif len(looks) == 1:
+                verdict = "all use the same materials/textures (one look)"
+            else:
+                verdict = f"{len(looks)} different material/texture sets"
+            warnings.append(f"{len(shinies)} {form} Shiny prefab(s) ({', '.join(p['name'] for p in shinies)}): "
+                            f"look not identified; {verdict}")
     for p in prefabs:
         p["variant"] = "unclassified" if p["form"] == "unclassified" else variant_key(p["form"], p["appearance"])
 
@@ -781,6 +992,11 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
         "unresolved_parts": base_cand.get("unresolved_parts", []),
     }
     for p in prefabs:
+        bare = [part for part in p["parts"] if not part["materials"]]
+        if bare:
+            warnings.append(f"{len(bare)} of {len(p['parts'])} part(s) of {p['name']!r} have no material: "
+                            f"{bare[0]['materials_missing']}")
+    for p in prefabs:
         if p is not base and p["_cand"]["bone_paths"] != base_cand["bone_paths"]:
             warnings.append(f"prefab {p['name']!r} is skinned to different bones than {base['name']!r}")
     skel_hashes = frozenset(path_hash(p) for p in skel_paths)
@@ -793,8 +1009,13 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
     # Clips linked only by binding match are added later (_link_clips_by_binding), across all species.
     anim_list = list(animations.values())
 
+    model_only = any(p["_model_only"] for p in prefabs)
+    if model_only:
+        warnings.append("only the character model was found (its model bundle); no gameplay prefab with this ID "
+                        "passed the name filter, so variants and runtime parts may be missing")
     for p in prefabs:
         p.pop("_cand")
+        p.pop("_model_only")
     # Codename hints come from bundle file names and asset paths (object names mostly name parts/slots).
     texts = sorted({t for a in asset_list for t in (a.get("container"),) if t}
                    | {t for p in prefabs for t in (p.get("container"), p.get("asset_path")) if t})
@@ -805,7 +1026,10 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
         "codename": _codename(rules, base["name"], texts),
         "game_id": game_id,
         "game_forms": sorted({p["game_form_index"] for p in prefabs if p["game_form_index"]}),
+        "model_only": model_only,
         "grouping_evidence": group_evidence or ["single-prefab"],
+        # Shiny prefabs grouped by the textures they actually use (evidence for distinct looks, or not).
+        "shiny_look_evidence": evidence_groups,
         "prefabs": prefabs,
         "skeleton": skeleton,
         "assets": asset_list,

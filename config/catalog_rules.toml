@@ -24,6 +24,9 @@ form_index_digits = 2
 # empty = every rigged prefab. The Studio's "Choose creature groups" writes these for you.
 include_name_prefixes = []
 exclude_name_prefixes = []
+# Regex on container file names marking a creature's model bundle, with a named group (?P<id>...) and optionally
+# (?P<codename>...). Empty: no ID coverage report. See catalog_rules_aniimo.toml for an example.
+model_bundle_pattern = ""
 # Tokens ignored when deriving a species name from a prefab name.
 stop_tokens = ["prefab", "body", "mesh", "model", "lod0", "skin", "mdl", "char", "npc"]
 

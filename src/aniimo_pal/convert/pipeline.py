@@ -47,6 +47,69 @@ def bones_from_hashes(hashes: list[int], paths: list[str], root_name: str | None
     return [lookup.get(int(h)) for h in hashes]
 
 
+def _own_clip(creature_dir: Path, asset: dict[str, Any]) -> dict[str, Any]:
+    """Clip decoded by `creature extract` (``animations/<name>.clip.json``), or why there is none."""
+    meta_rel = asset.get("extracted") or ""
+    if not meta_rel.endswith(".json") or not (creature_dir / meta_rel).is_file():
+        return {"error": "not extracted yet: run `creature extract`"}
+    meta = json.loads((creature_dir / meta_rel).read_text(encoding="utf-8"))
+    if meta.get("clip_file"):
+        path = creature_dir / "extract" / "unitypy" / meta["clip_file"]
+        if path.is_file():
+            return {"clip": json.loads(path.read_text(encoding="utf-8"))}
+    if meta.get("decode_error"):
+        return {"error": f"clip not decoded: {meta['decode_error']}"}
+    return {"error": "extracted before clip decoding existed: run `creature extract` again"}
+
+
+def _has_texture(creature_dir: Path, material_asset: dict[str, Any] | None) -> bool:
+    if not material_asset or not material_asset.get("extracted"):
+        return False
+    path = creature_dir / material_asset["extracted"]
+    if not path.is_file():
+        return False
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    return any((t or {}).get("file") for t in (doc.get("textures") or {}).values())
+
+
+def _completeness(creature: dict[str, Any], creature_dir: Path, skins: list[dict[str, Any]],
+                  outputs: list[dict[str, Any]], clips: list[dict[str, Any]], include_proposed: bool) -> dict[str, Any]:
+    """Geometry, materials/textures and animations judged separately: an FBX alone is not a usable port."""
+    any_active = any(s.get("active", True) for s in skins)
+    base = [s for s in skins if s.get("state") in (None, "default") and not (any_active and s.get("active") is False)]
+    base_names = {s.get("mesh_name") for s in base}
+    ok = {o["mesh"] for o in outputs if o["status"] == "ok"}
+    unresolved = [u["renderer"] for u in (creature.get("skeleton") or {}).get("unresolved_parts") or []
+                  if u.get("state") in (None, "default")]
+    geometry_missing = sorted(n for n in base_names if n not in ok) + unresolved
+    materials = {(a.get("ref") or {}).get("object"): a for a in creature["assets"]
+                 if a["role"] == "material" and _usable(a, include_proposed)}
+    untextured = []
+    for s in base:
+        if s.get("mesh_name") not in ok:
+            continue
+        if not any(_has_texture(creature_dir, materials.get(m)) for m in s.get("materials") or []):
+            untextured.append({"part": s.get("mesh_name"), "reason": s.get("materials_missing") or (
+                "material not extracted or has no texture" if s.get("materials") else "no material")})
+    anims = [a for a in creature["assets"] if a["role"] == "animation" and _usable(a, include_proposed)]
+
+    def grade(have: int, total: int) -> str:
+        return "missing" if total and not have else ("complete" if have >= total else "incomplete")
+
+    out = {
+        "geometry": {"status": "missing" if not ok else ("complete" if not geometry_missing else "incomplete"),
+                     "parts_ok": len(ok & base_names), "missing_parts": geometry_missing},
+        "materials": {"status": grade(len([s for s in base if s.get("mesh_name") in ok]) - len(untextured),
+                                      len([s for s in base if s.get("mesh_name") in ok])) if ok else "missing",
+                      "untextured_parts": untextured},
+        "animations": {"status": grade(len(clips), len(anims)) if anims else "none in project",
+                       "converted": len(clips), "in_project": len(anims)},
+    }
+    out["ready_for_next_step"] = all(out[k]["status"] in ("complete", "none in project")
+                                     for k in ("geometry", "materials", "animations"))
+    return out
+
+
 def _usable(asset: dict[str, Any], include_proposed: bool) -> bool:
     return asset.get("association") == "confirmed" or (include_proposed and asset.get("association") == "proposed")
 
@@ -73,12 +136,14 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
     for i, a in enumerate(assets):
         if a["role"] != "animation" or not _usable(a, include_proposed):
             continue
+        own = _own_clip(creature_dir, a)
         files = [f for f in (a.get("assetripper") or {}).get("project", []) if f.endswith(".anim")]
-        if not files:
-            clip_errors.append({"index": i, "name": a.get("name"), "error": "no .anim from AssetRipper project export"})
+        if own.get("clip") is None and not files:
+            clip_errors.append({"index": i, "name": a.get("name"), "error": own.get("error") or
+                                "not decoded by `creature extract` and no .anim from the AssetRipper project export"})
             continue
         try:
-            clip = parse_anim_file(creature_dir / files[0])
+            clip = own["clip"] if own.get("clip") is not None else parse_anim_file(creature_dir / files[0])
             clip["asset_index"] = i
             clips.append(clip)
         except Exception as exc:  # keep converting other clips
@@ -188,6 +253,7 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
                 if rec["status"] == "ok":
                     rec.update(status="error", error=model["error"])
 
+    completeness = _completeness(creature, creature_dir, skins, outputs, clips, include_proposed)
     errors = sum(1 for o in outputs if o["status"] == "error") + len(clip_errors)
     if errors == 0 and any(o["status"] == "ok" for o in outputs) and creature.get("status") in ("mapped", "extracted"):
         creature["status"] = "converted"
@@ -198,7 +264,8 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
     doc = {"schema": "aniimo-pal/convert-summary", "schema_version": "0.1.0",
            "generator": {"name": TOOL_NAME, "version": __version__},
            "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), "creature": creature["id"],
-           "summary": summary, "model": model, "meshes": outputs, "clip_errors": clip_errors,
+           "summary": summary, "completeness": completeness, "model": model, "meshes": outputs,
+           "clip_errors": clip_errors,
            "notes": ["Variant materials/textures are applied as material instances at Unreal import (milestone 5).",
                      "Unreal import and in-game behaviour are not verified by this step."]}
     write_json_atomic(doc, creature_dir / "convert" / "report.json")

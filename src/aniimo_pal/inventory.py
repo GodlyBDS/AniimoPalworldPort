@@ -50,7 +50,7 @@ log = get_logger("inventory")
 SCHEMA_ID = "aniimo-pal/objects"
 SCHEMA_VERSION = "0.2.0"
 INVENTORY_KINDS = ("unity_bundle", "unity_serialized")
-CACHE_FORMAT = "inv-2"  # bump when per-container records change
+CACHE_FORMAT = "inv-3"  # bump when per-container records change
 VERIFY_MODES = ("quick", "hash", "none")
 
 
@@ -93,6 +93,24 @@ def _inventory_container(path: str, all_objects: bool) -> dict[str, Any]:
     counts: dict[str, int] = {}
     files, objects = [], []
     for inv in UnityPyAdapter().inventory_file(path, all_objects=all_objects, class_counts=counts):
+        files.append({"cab": inv.cab, "unity_version": inv.unity_version, "externals": inv.externals,
+                      "object_count": len(inv.objects)})
+        objects.extend(inv.objects)
+    return {"serialized_files": files, "objects": objects, "class_counts": counts,
+            "seconds": round(time.monotonic() - started, 3)}
+
+
+def _inventory_seed_container(path: str, all_objects: bool) -> dict[str, Any]:
+    """Worker: like :func:`_inventory_container`, also decoding components (MonoBehaviours) with references.
+
+    Used for containers holding skinned renderers (creature prefabs): a component there may be what assigns
+    meshes or materials at runtime.
+    """
+    started = time.monotonic()
+    counts: dict[str, int] = {}
+    files, objects = [], []
+    for inv in UnityPyAdapter().inventory_file(path, all_objects=all_objects, class_counts=counts,
+                                               parse_behaviours=True):
         files.append({"cab": inv.cab, "unity_version": inv.unity_version, "externals": inv.externals,
                       "object_count": len(inv.objects)})
         objects.extend(inv.objects)
@@ -222,7 +240,11 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
         while wanted and rounds < 8:
             rounds += 1
             batch = [by_rel[r] for r in sorted(wanted) if r not in deep]
-            new = run_phase(batch, _inventory_container, deep_tag, f"deep read (round {rounds})")
+            if rounds == 1:  # creature prefab containers: components decoded too
+                new = run_phase(batch, _inventory_seed_container, deep_tag + "-components",
+                                f"deep read (round {rounds})")
+            else:
+                new = run_phase(batch, _inventory_container, deep_tag, f"deep read (round {rounds})")
             deep.update(new)
             for res in new.values():
                 for sf in res.get("serialized_files", []):

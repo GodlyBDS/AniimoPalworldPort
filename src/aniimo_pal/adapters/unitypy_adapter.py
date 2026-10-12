@@ -34,7 +34,7 @@ PARSE_CLASSES = {
     "GameObject", "Transform", "RectTransform", "MeshFilter", "MeshRenderer", "SkinnedMeshRenderer",
     "Material", "Texture2D", "Mesh", "AnimationClip", "Animator", "AnimatorController",
     "AnimatorOverrideController", "Avatar", "Animation", "AssetBundle", "Sprite", "MonoBehaviour",
-    "PrefabInstance", "Prefab", "TextAsset",
+    "PrefabInstance", "Prefab", "TextAsset", "MonoScript",
 }
 # Classes whose references are not walked (no useful PPtrs, large payloads).
 NO_REF_WALK = {"Texture2D", "Mesh", "AnimationClip", "Avatar", "AssetBundle", "TextAsset"}
@@ -160,6 +160,8 @@ def _class_info(cls: str, d: dict[str, Any]) -> dict[str, Any]:
         info.update(position=d.get("m_LocalPosition"), rotation=d.get("m_LocalRotation"), scale=d.get("m_LocalScale"))
     elif cls == "TextAsset":
         info.update(_text_asset_info(d.get("m_Script")))
+    elif cls == "MonoScript":
+        info.update(class_name=d.get("m_ClassName"), namespace=d.get("m_Namespace"), assembly=d.get("m_AssemblyName"))
     elif cls == "AssetBundle":
         info.update(bundle_name=d.get("m_AssetBundleName"), dependencies=list(d.get("m_Dependencies") or []))
     return info
@@ -252,7 +254,8 @@ class UnityPyAdapter(ToolAdapter):
     # -- inventory -----------------------------------------------------------
 
     def inventory_file(self, path: str | Path, *, all_objects: bool = False,
-                       class_counts: dict[str, int] | None = None) -> list[SerializedInventory]:
+                       class_counts: dict[str, int] | None = None,
+                       parse_behaviours: bool = False) -> list[SerializedInventory]:
         """Inventory the SerializedFiles inside ``path`` (bundle or .assets).
 
         By default only classes the catalog and data discovery use are recorded
@@ -273,7 +276,10 @@ class UnityPyAdapter(ToolAdapter):
                 if class_counts is not None:
                     class_counts[cls] = class_counts.get(cls, 0) + 1
                 if all_objects or cls in RELEVANT_CLASSES:
-                    inv.objects.append(self._object_record(obj, cab, externals, cls, node_cache, all_objects))
+                    # parse_behaviours: components are decoded with their object references (e.g. a component
+                    # on a creature prefab that assigns meshes or materials at runtime).
+                    inv.objects.append(self._object_record(obj, cab, externals, cls, node_cache,
+                                                           all_objects or (parse_behaviours and cls == "MonoBehaviour")))
             inv.objects.sort(key=lambda o: o["path_id"])
             results.append(inv)
         return results
@@ -365,6 +371,11 @@ class UnityPyAdapter(ToolAdapter):
                     rec["name"] = obj.peek_name() or None
         except Exception as exc:  # malformed / unsupported object: record and continue
             rec["error"] = f"{type(exc).__name__}: {exc}"[:300]
+            if rec["name"] is None:
+                try:
+                    rec["name"] = obj.peek_name() or None
+                except Exception:
+                    pass
         return rec
 
     # -- extraction helpers --------------------------------------------------

@@ -81,11 +81,11 @@ def creature_from_catalog(catalog: dict[str, Any], key: str, *, creature_id: str
     variants = c["variants"]
     has_prismana = any(p.get("form") == "prismana" for p in sp["prefabs"])
     shiny_ids = sorted({p["appearance"] for p in sp["prefabs"]
-                        if str(p.get("appearance", "")).startswith("shiny_") and p.get("form") != "unclassified"})
+                        if str(p.get("appearance", "")).startswith("shiny") and p.get("form") != "unclassified"})
     variants["forms"]["prismana"]["enabled"] = has_prismana
     if shiny_ids:
         variants["shiny"] = {"enabled": True,
-                             "appearances": [{"id": i, "name": f"Shiny {int(i.split('_')[1])}", "weight": 1.0,
+                             "appearances": [{"id": i, "name": appearance_name(i), "weight": 1.0,
                                               "provenance": "inferred"} for i in shiny_ids]}
     for ctx in ("wild", "egg"):
         variants["rarity"][ctx] = {
@@ -97,6 +97,15 @@ def creature_from_catalog(catalog: dict[str, Any], key: str, *, creature_id: str
     c["history"] = [{"utc": _now(), "action": "created-from-catalog", "species": sp["key"]}]
     maybe_mark_mapped(c)
     return c
+
+
+def appearance_name(appearance: str) -> str:
+    """'shiny_03' -> 'Shiny 3'; 'shiny' -> 'Shiny (look not identified)'."""
+    if appearance.startswith("shiny_") and appearance[6:].isdigit():
+        return f"Shiny {int(appearance[6:])}"
+    if appearance == "shiny":
+        return "Shiny (look not identified)"
+    return appearance
 
 
 def _now() -> str:

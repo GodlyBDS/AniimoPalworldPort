@@ -22,6 +22,9 @@ Progress = Callable[[int, int, str], None]
 PROGRESS_LINE = re.compile(r"^\[(\d+)/(\d+)\] (.*)$")
 
 
+EXIT_INCOMPLETE = 3  # step wrote a result that is not complete (see its output); later steps may still run
+
+
 class StepStopped(Exception):
     """The user stopped the running step."""
 
@@ -145,6 +148,13 @@ class StepRunner:
     def cmd_catalog(self) -> list[str]:
         # Your own group choice, else the Aniimo preset (creatures only: P_Parmon_* and their forms).
         preset = self.layout.root / "config" / "catalog_rules_aniimo.toml"
+        if self.ws.catalog_rules.is_file() and preset.is_file():
+            try:  # your choice keeps the preset's other settings (added to the preset after you chose)
+                from aniimo_pal.catalog.rules import update_rules_file
+
+                update_rules_file(self.ws.catalog_rules, base=preset)
+            except Exception:
+                pass  # the catalog step reports an invalid rules file itself
         chosen = self.ws.catalog_rules if self.ws.catalog_rules.is_file() else preset if preset.is_file() else None
         rules = ["--rules", str(chosen)] if chosen else []
         rules += ["--names", str(self.ws.names)] if self.ws.names.is_file() else []
@@ -213,7 +223,7 @@ class StepRunner:
     def run_all(self, cmds: list[list[str]], log: Log, allow_check_failure: bool = False) -> bool:
         for cmd in cmds:
             code = self.run(cmd, log)
-            if code == 2 or (code == 1 and not allow_check_failure):
+            if code == 2 or (code == 1 and not allow_check_failure) or code not in (0, 1, 2, EXIT_INCOMPLETE):
                 return False
         return True
 

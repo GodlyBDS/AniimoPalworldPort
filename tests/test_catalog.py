@@ -28,13 +28,13 @@ def test_species_and_variants(pipeline):
     assert [s["key"] for s in cat["species"]] == ["foxlet", "mossbun"]
     fox = _species(cat, "foxlet")
     assert {p["name"]: p["variant"] for p in fox["prefabs"]} == {
-        "Foxlet": "normal", "Foxlet_Shiny": "normal+shiny_01", "Foxlet_Prismana": "prismana"}
+        "Foxlet": "normal", "Foxlet_Shiny": "normal+shiny", "Foxlet_Prismana": "prismana"}
     shiny = next(p for p in fox["prefabs"] if p["name"] == "Foxlet_Shiny")
-    assert (shiny["region"], shiny["form"], shiny["appearance"]) == ("base", "normal", "shiny_01")
+    assert (shiny["region"], shiny["form"], shiny["appearance"]) == ("base", "normal", "shiny")
     assert fox["grouping_evidence"] == ["shared-mesh"]
     assert fox["suggested_id"] == "aniimo_foxlet" and fox["display_name"] == "Foxlet"
-    assert fox["warnings"] == ["1 normal Shiny prefab(s) numbered by name order (inferred); "
-                               "verify appearance identities against the source data"]
+    assert fox["warnings"] == ["1 normal Shiny prefab(s) (Foxlet_Shiny): look not identified; single Shiny prefab"]
+    assert shiny["appearance_identity"] == "unidentified"
 
 
 def test_asset_roles_and_variant_attribution(pipeline):
@@ -43,7 +43,7 @@ def test_asset_roles_and_variant_attribution(pipeline):
     assert by_name["Foxlet_Body"]["role"] == "mesh"
     assert (by_name["Foxlet_Body"]["form"], by_name["Foxlet_Body"]["appearance"]) == ("shared", "any")
     assert by_name["FoxletAvatar"]["role"] == "skeleton"
-    assert (by_name["Foxlet_Shiny_Albedo"]["form"], by_name["Foxlet_Shiny_Albedo"]["appearance"]) == ("normal", "shiny_01")
+    assert (by_name["Foxlet_Shiny_Albedo"]["form"], by_name["Foxlet_Shiny_Albedo"]["appearance"]) == ("normal", "shiny")
     assert by_name["Foxlet_Shiny_Albedo"]["slot"] == "_MainTex"
     assert (by_name["Foxlet_Prismana_Mat"]["form"], by_name["Foxlet_Prismana_Mat"]["appearance"]) == ("prismana", "standard")
     assert (by_name["Foxlet_Normal"]["form"], by_name["Foxlet_Normal"]["appearance"]) == ("normal", "standard")
@@ -117,7 +117,7 @@ def test_duplicated_meshes_grouped_by_skeleton_and_name(tmp_path):
     sp = _catalog_for(tmp_path, b)["species"]
     assert len(sp) == 1
     assert sp[0]["grouping_evidence"] == ["same-skeleton+name-stem"]
-    assert {p["variant"] for p in sp[0]["prefabs"]} == {"normal", "normal+shiny_01"}
+    assert {p["variant"] for p in sp[0]["prefabs"]} == {"normal", "normal+shiny"}
 
 
 def test_static_props_ignored_by_default(tmp_path):
@@ -165,9 +165,11 @@ def test_prismana_shiny_detected_as_both(tmp_path):
     sp = _catalog_for(tmp_path, b)["species"][0]
     got = {p["name"]: (p["form"], p["appearance"]) for p in sp["prefabs"]}
     assert got == {"Foxlet": ("normal", "standard"), "Foxlet_Prismana": ("prismana", "standard"),
-                   "Foxlet_Prismana_Shiny_A": ("prismana", "shiny_01"),
-                   "Foxlet_Prismana_Shiny_B": ("prismana", "shiny_02")}
-    assert any("numbered by name order" in w for w in sp["warnings"])
+                   "Foxlet_Prismana_Shiny_A": ("prismana", "shiny"),
+                   "Foxlet_Prismana_Shiny_B": ("prismana", "shiny")}
+    assert any("look not identified" in w for w in sp["warnings"])
+    (ev,) = sp["shiny_look_evidence"]
+    assert ev["form"] == "prismana" and ev["prefabs"] == ["Foxlet_Prismana_Shiny_A", "Foxlet_Prismana_Shiny_B"]
 
 
 def test_diagnostics_explain_missing_meshes(tmp_path):
@@ -387,9 +389,11 @@ def test_unresolvable_parts_are_recorded_and_hidden_parts_flagged(tmp_path):
     (tmp_path / "m.uab").write_bytes(ub.bundle(m.build(), "CAB-m"))
     skel = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))["species"][0]["skeleton"]
     assert [(s["mesh_name"], s["active"]) for s in skel["skins"]] == [("M_Parmon_10503_Fur01_Rampage_-1659155025", False)]
-    assert skel["unresolved_parts"] == [{"renderer": "M_Parmon_10503_Body", "state": None, "active": True,
-                                         "empty_slot": False,
-                                         "candidates": ["M_Parmon_10503_Body_111111111", "M_Parmon_10503_Body_222222222"]}]
+    (u,) = skel["unresolved_parts"]
+    assert {k: u[k] for k in ("renderer", "state", "active", "empty_slot", "candidates")} == {
+        "renderer": "M_Parmon_10503_Body", "state": None, "active": True, "empty_slot": False,
+        "candidates": ["M_Parmon_10503_Body_111111111", "M_Parmon_10503_Body_222222222"]}
+    assert u["selection"]["criterion"] is None and len(u["selection"]["candidates"]) == 2  # a tie: shown, not guessed
 
 
 def test_aniimo_preset_only_adds_the_creature_filter():
@@ -398,7 +402,7 @@ def test_aniimo_preset_only_adds_the_creature_filter():
 
     preset = load_rules(Path(__file__).resolve().parents[1] / "config" / "catalog_rules_aniimo.toml")
     assert preset.include_name_prefixes == ["p_parmon", "ng_p_parmon"]
-    assert replace(preset, include_name_prefixes=[]) == CatalogRules()
+    assert replace(preset, include_name_prefixes=[], model_bundle_pattern="") == CatalogRules()
 
 
 def test_empty_mesh_slot_resolved_by_name_and_alternative_looks_tagged(tmp_path):
@@ -461,3 +465,75 @@ def test_runtime_mesh_prefers_bone_fit_then_patch_bundle(tmp_path):
     (tmp_path / "xpt24_ar_char_3af4_ar_char_parm_10321_rose_fbx.uab").write_bytes(ub.bundle(m.build(), "CAB-m1"))
     cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))
     assert [s["mesh_name"] for s in cat["species"][0]["skeleton"]["skins"]] == ["M_Parmon_10321_Eye_-2121219568"]
+
+
+def _component_game(tmp_path):
+    b = ub.SerializedBuilder()
+    gos = _placeholder_creature(b, "P_Parmon_10351", ["M_Parmon_10351_Body"])
+    smr = next(o for o in b._objects if o.class_id == 137)
+    smr.data["m_Mesh"] = ub.pptr(0)
+    smr.data["m_Materials"] = []
+    mat = ub.add_material(b, "MI_Parmon_10351_Body_01a", {"_MainTex": ub.add_texture(b, "T_Parmon_10351_Body_D")})
+    mesh = ub.add_triangle_mesh(b, "M_Parmon_10351_Body_42424242", ub.DEFAULT_BONES)
+    (tmp_path / "p.uab").write_bytes(ub.bundle(b.build(), "CAB-p"))
+    doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
+    oid = {o["name"]: o["id"] for o in doc["objects"] if o.get("name")}
+    root = next(o for o in doc["objects"] if o["class"] == "GameObject" and o["name"] == "P_Parmon_10351")
+    return doc, oid, root, smr, mat, mesh, gos
+
+
+def test_material_and_mesh_assigned_by_a_component_are_linked_with_evidence(tmp_path):
+    doc, oid, root, smr, mat, mesh, _gos = _component_game(tmp_path)
+    # What the inventory records for a component decoded with its type tree (real bundles embed them).
+    doc["objects"] += [
+        {"id": "cab-p:9998", "cab": "cab-p", "path_id": 9998, "class": "MonoScript", "class_id": 115,
+         "name": "ParmonAvatar", "refs": [], "info": {"class_name": "ParmonAvatar"}, "container": "p.uab"},
+        {"id": "cab-p:9999", "cab": "cab-p", "path_id": 9999, "class": "MonoBehaviour", "class_id": 114, "name": None,
+         "info": {}, "container": "p.uab", "refs": [
+             {"field": "m_GameObject", "target": root["id"]}, {"field": "m_Script", "target": "cab-p:9998"},
+             {"field": "m_Parts[0].renderer", "target": f"cab-p:{smr.path_id}"},
+             {"field": "m_Parts[0].materials[0]", "target": f"cab-p:{mat}"},
+             {"field": "m_Parts[0].mesh", "target": f"cab-p:{mesh}"}]}]
+    root["refs"].append({"field": "m_Component[9].component", "target": "cab-p:9999"})
+    cat = build_catalog(doc)
+    (skin,) = cat["species"][0]["skeleton"]["skins"]
+    assert skin["materials"] == [f"cab-p:{mat}"] and skin["materials_source"] == "component:ParmonAvatar.m_Parts[0]"
+    assert skin["mesh_name"] == "M_Parmon_10351_Body_42424242" and skin["mesh_provenance"] == "verified-link"
+    assert any(a["role"] == "texture" and a["name"] == "T_Parmon_10351_Body_D" for a in cat["species"][0]["assets"])
+
+
+def test_missing_material_is_reported_with_its_cause(tmp_path):
+    doc, *_ = _component_game(tmp_path)
+    sp = build_catalog(doc)["species"][0]
+    part = sp["prefabs"][0]["parts"][0]
+    assert part["materials"] == [] and "no material assigned in the prefab" in part["materials_missing"]
+    assert any("have no material" in w for w in sp["warnings"])
+    assert "runtime assignment not observed" in part["mesh_uncertainty"]
+
+
+def test_id_coverage_lists_model_bundles_without_a_creature_and_falls_back_to_the_model(tmp_path):
+    from dataclasses import replace
+
+    rules = replace(CatalogRules(), include_name_prefixes=["p_parmon"],
+                    model_bundle_pattern=r"ar_char_parm_(?P<id>\d{4,})_(?P<codename>[a-z0-9]+)_fbx")
+    b = ub.SerializedBuilder()
+    ub.add_creature(b, "P_Parmon_10351", bones=ub.DEFAULT_BONES, clips=[])
+    (tmp_path / "p_parmon_10351.uab").write_bytes(ub.bundle(b.build(), "CAB-a"))
+    b = ub.SerializedBuilder()  # model bundle only (no gameplay prefab): Lunara-like
+    ub.add_creature(b, "M_Parmon_10371", bones=ub.DEFAULT_BONES, clips=[])
+    (tmp_path / "ar_char_parm_10371_bornfox_fbx_0_19745d2b.uab").write_bytes(ub.bundle(b.build(), "CAB-b"))
+    b = ub.SerializedBuilder()  # model bundle whose renderers have empty slots and no named mesh
+    gos = _placeholder_creature(b, "M_Parmon_10363", ["M_Parmon_10363_Body"])
+    for o in b._objects:
+        if o.class_id == 137:
+            o.data["m_Mesh"] = ub.pptr(0)
+    assert gos == {}
+    (tmp_path / "ar_char_parm_10363_bornlion_fbx_0_8e7c08.uab").write_bytes(ub.bundle(b.build(), "CAB-c"))
+    cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path), rules)
+    cov = cat["summary"]["id_coverage"]
+    assert sorted(s["game_id"] for s in cat["species"]) == ["10351", "10371"]
+    assert cov["model_only"] == ["10371"] and cov["ids_with_model_bundle"] == 2 and cov["in_catalog"] == 1
+    (miss,) = cov["missing"]
+    assert miss["id"] == "10363" and miss["codename"] == "bornlion" and "empty mesh slots" in miss["reason"]
+    lunara = next(s for s in cat["species"] if s["game_id"] == "10371")
+    assert lunara["model_only"] and any("only the character model" in w for w in lunara["warnings"])

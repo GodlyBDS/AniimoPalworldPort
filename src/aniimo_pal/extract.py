@@ -84,6 +84,10 @@ def extract_creature(creature: dict[str, Any], creature_dir: str | Path, game_ro
     outputs: list[dict[str, Any]] = []
     used_names: set[str] = set()
     texture_files: dict[str, str] = {}
+    skeleton = creature.get("skeleton") or {}
+    # Bound path hash -> transform path, for decoding compiled animation clips.
+    clip_paths = {"paths": [b_["path"] for b_ in skeleton.get("bones") or []], "root": skeleton.get("root_name"),
+                  "tos": []}
 
     def unique(rel: str) -> str:
         if rel not in used_names:
@@ -121,7 +125,7 @@ def extract_creature(creature: dict[str, Any], creature_dir: str | Path, game_ro
                 reader = readers.get(a["ref"].get("object"))
                 if reader is None:
                     raise ToolkitError("object not found in container (game data changed?)")
-                rec["file"] = _export_one(reader, a, out_root, unique, texture_files)
+                rec["file"] = _export_one(reader, a, out_root, unique, texture_files, clip_paths)
                 if rec["file"] is None:
                     rec["status"] = "skipped"
                     rec["error"] = f"role {a['role']!r} has no UnityPy export (handled by later stages)"
@@ -175,7 +179,8 @@ def _scope_dir(asset: dict[str, Any]) -> str:
     return "/".join(parts)
 
 
-def _export_one(reader, asset: dict[str, Any], out_root: Path, unique, texture_files: dict[str, str]) -> str | None:
+def _export_one(reader, asset: dict[str, Any], out_root: Path, unique, texture_files: dict[str, str],
+                clip_paths: dict[str, Any] | None = None) -> str | None:
     role = asset["role"]
     variant = _scope_dir(asset)
     fallback = f"obj_{reader.path_id}"
@@ -237,19 +242,40 @@ def _export_one(reader, asset: dict[str, Any], out_root: Path, unique, texture_f
                            "int": e.get("intParameter"), "float": e.get("floatParameter")}
                           for e in d.get("m_Events") or []],
                "bound_path_hashes": sorted({int(b["path"]) for b in bindings if b.get("path")}),
-               "curves_exported": False, "provenance": "verified",
-               "note": "curves are exported by the AssetRipper stage, not by UnityPy"}
+               "curves_exported": False, "clip_file": None, "provenance": "verified"}
         rel = unique(f"animations/{_safe(d.get('m_Name'), fallback)}.json")
+        # Curves: decoded from the compiled clip by the toolkit (AssetRipper wrote no .anim for real clips).
+        from aniimo_pal.convert.muscle_clip import ClipNotDecodable, decode_clip, hash_lookup, structure_report
+
+        cp = clip_paths or {}
+        try:
+            clip = decode_clip(d, hash_lookup(cp.get("paths") or [], cp.get("root"), cp.get("tos")))
+            clip_rel = rel[:-5] + ".clip.json"
+            write_json_atomic(_json_safe(clip), out_root / clip_rel)
+            doc.update(curves_exported=True, clip_file=clip_rel, decoder=clip["decoder"], warnings=clip["warnings"])
+        except ClipNotDecodable as exc:
+            doc.update(decode_error=str(exc), structure=exc.report)
+        except Exception as exc:  # malformed data: keep the metadata, report the failure
+            doc.update(decode_error=f"{type(exc).__name__}: {exc}"[:400], structure=_safe_report(structure_report, d))
         write_json_atomic(_json_safe(doc), out_root / rel)
         return rel
     if role == "skeleton" and reader.type.name == "Avatar":
         d = reader.parse_as_dict(check_read=False)
+        if clip_paths is not None:  # verified hash -> path table for clips exported after this
+            clip_paths["tos"] = [(int(h), str(p)) for h, p in d.get("m_TOS") or [] if p]
         doc = {"name": d.get("m_Name"), "bone_paths": sorted({p for _h, p in d.get("m_TOS") or [] if p}),
                "provenance": "verified"}
         rel = unique(f"skeleton/{_safe(d.get('m_Name'), fallback)}.json")
         write_json_atomic(doc, out_root / rel)
         return rel
     return None
+
+
+def _safe_report(fn, d):
+    try:
+        return fn(d)
+    except Exception:
+        return None
 
 
 def _resolve_pptr(reader, pptr: dict[str, Any]) -> str | None:

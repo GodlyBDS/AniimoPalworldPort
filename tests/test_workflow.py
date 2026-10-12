@@ -26,7 +26,7 @@ def test_from_catalog_autoconfirms_verified(pipeline):
     assert all(a["association"] == "confirmed" for a in c["assets"])
     v = c["variants"]
     assert v["forms"]["prismana"]["enabled"] and v["shiny"]["enabled"]
-    assert [a["id"] for a in v["shiny"]["appearances"]] == ["shiny_01"]  # only what the data contains
+    assert [a["id"] for a in v["shiny"]["appearances"]] == ["shiny"]  # only what the data contains
     assert v["rarity"]["wild"] == {"prismana_probability": 0.0002, "shiny_probability": 0.002}
     assert v["rarity"]["egg"] == {"prismana_probability": 0.0, "shiny_probability": 0.002}
     assert {a["role"] for a in c["assets"]} == {"mesh", "material", "texture", "skeleton", "animation", "other"}
@@ -67,7 +67,7 @@ def test_extract_outputs(pipeline):
     assert report["summary"] == {"ok": 15, "errors": 0, "skipped": 1}  # controller has no UnityPy export
     assert c["status"] == "extracted"
     out = path.parent / "extract" / "unitypy"
-    img = Image.open(out / "textures" / "normal" / "shiny_01" / "Foxlet_Shiny_Albedo.png")
+    img = Image.open(out / "textures" / "normal" / "shiny" / "Foxlet_Shiny_Albedo.png")
     assert img.size == (4, 4) and img.getpixel((0, 0))[:3] == (240, 220, 60)
     assert "v " in (out / "meshes" / "Foxlet_Body.obj").read_text()
     mat = json.loads((out / "materials" / "prismana" / "Foxlet_Prismana_Mat.json").read_text())

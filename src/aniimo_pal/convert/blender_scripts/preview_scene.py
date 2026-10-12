@@ -126,12 +126,14 @@ def run(job: dict) -> dict:
         a.parent = holder
         holders.append(holder)
         part_textures = var.get("part_textures") or {}
+        used = {}
         for m in ms:
             # Each part (body, eyes, ...) gets its own material's texture; else the variant's main texture.
             tex = next((t for name, t in sorted(part_textures.items(), key=lambda kv: -len(kv[0]))
                         if m.name.startswith(name) or m.data.name.startswith(name)), None)
             m.data.materials.clear()
             m.data.materials.append(variant_material(f"{var['label']}_{m.name}", tex) if tex else mat)
+            used[m.data.name] = tex or var.get("texture")  # texture actually on this mesh in Blender (None: grey)
         curve = bpy.data.curves.new(f"Label_{var['label']}", "FONT")
         curve.body = var["label"]
         curve.size = max(size.z, 0.3) * 0.18
@@ -140,7 +142,8 @@ def run(job: dict) -> dict:
         scene.collection.objects.link(text)
         text.location = Vector(((lo.x + hi.x) / 2 + spacing * i, (lo.y + hi.y) / 2, hi.z + size.z * 0.15 + 0.05))
         text.rotation_euler = (1.5708, 0, 0)
-        placed.append({"label": var["label"], "texture": var.get("texture"), "armature": a.name})
+        placed.append({"label": var["label"], "texture": var.get("texture"), "armature": a.name,
+                       "blender_textures": used, "missing_textures": var.get("missing_textures") or []})
 
     # Orthographic front camera framing every variant and its label.
     width = spacing * (len(variants) - 1) + max(size.x, size.y, 0.3)

@@ -106,7 +106,7 @@ def test_convert_with_simulated_assetripper_outputs(skinned_game, tmp_path):
     from aniimo_pal.convert.preview import build_preview
 
     preview = build_preview(c, cdir)
-    assert [v["label"] for v in preview["variants"]] == ["Normal", "Shiny 1"]
+    assert [v["label"] for v in preview["variants"]] == ["Normal", "Shiny (look not identified)"]
     assert all(v["texture"] and Path(v["texture"]).is_file() for v in preview["variants"])
     assert [t["action"] for t in preview["timeline"]] == ["Foxlet_Wag"]
     assert (cdir / "preview" / "preview.blend").is_file()
@@ -311,3 +311,33 @@ def test_bones_from_hashes_and_alternative_look_skipped(tmp_path):
     by_mesh = {m["mesh"]: m for m in report["meshes"]}
     assert by_mesh["M_Fur01_Rampage_1"]["status"] == "skipped" and "rampage" in by_mesh["M_Fur01_Rampage_1"]["error"]
     assert by_mesh["M_Fur01_Default_1"]["error"] == "mesh asset not confirmed in this creature project"
+
+
+def test_compiled_clip_decoded_by_extract_drives_the_fbx_without_assetripper(skinned_game, tmp_path):
+    pytest.importorskip("bpy")
+    from aniimo_pal.convert.pipeline import convert_creature
+    from aniimo_pal.extract import extract_creature
+
+    cat = build_catalog(build_inventory(scan(skinned_game, ScanConfig()), skinned_game))
+    c = creature_from_catalog(cat, cat["species"][0]["key"])
+    path = save_creature(c, creature_path(tmp_path / "ws", c["id"]))
+    extract_creature(c, path.parent, skinned_game, include_proposed=True)
+    wag = next(a for a in c["assets"] if a["role"] == "animation" and a["name"] == "Foxlet_Wag")
+    meta = json.loads((path.parent / wag["extracted"]).read_text())
+    assert meta["curves_exported"] and meta["decoder"]["curves"]["dense"] == 7
+    report = convert_creature(c, path.parent, include_proposed=True)
+    assert report["clip_errors"] == [] and report["summary"]["clips"] == 1
+    clip = report["model"]["clips"][0]
+    assert clip["name"] == "Foxlet_Wag" and clip["unknown_paths"] == [] and clip["max_head_error_m"] < 1e-3
+    comp = report["completeness"]
+    assert comp["geometry"]["status"] == "complete" and comp["animations"]["status"] == "complete"
+    assert comp["materials"]["status"] == "complete" and comp["ready_for_next_step"]
+
+    # Without its material the same model is reported as untextured, not as a finished port.
+    for a in c["assets"]:
+        if a["role"] == "material":
+            a["association"] = "rejected"
+    report = convert_creature(c, path.parent, include_proposed=True)
+    comp = report["completeness"]
+    assert comp["materials"]["status"] == "missing" and not comp["ready_for_next_step"]
+    assert comp["materials"]["untextured_parts"][0]["part"] == "Foxlet_Body"

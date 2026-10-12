@@ -28,6 +28,10 @@ form_index_digits = 2
 # empty = every rigged prefab. The Studio's "Choose creature groups" writes these for you.
 include_name_prefixes = ["p_parmon", "ng_p_parmon"]
 exclude_name_prefixes = []
+# Creature model bundles in this install are named ar_char_parm_<id>_<codename>_fbx_<n>_<hash>.uab (also inside
+# xptNN_ patch bundle names). The catalog lists IDs that have such a bundle but no creature entry, with the reason,
+# and uses the model prefab itself when no P_Parmon prefab with that ID exists ("model only").
+model_bundle_pattern = 'ar_char_parm_(?P<id>\d{4,})_(?P<codename>[a-z0-9]+)_fbx'
 # Tokens ignored when deriving a species name from a prefab name.
 stop_tokens = ["prefab", "body", "mesh", "model", "lod0", "skin", "mdl", "char", "npc"]
 
