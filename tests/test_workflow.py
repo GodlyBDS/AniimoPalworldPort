@@ -105,6 +105,8 @@ def test_cli_end_to_end(creature_game, tmp_path, capsys):
     m, objs, cat = ws / "manifest.json", ws / "objects.json", ws / "catalog.json"
     assert main(["scan", str(root), "-o", str(m), "-q"]) == EXIT_OK
     assert main(["inventory", str(m), str(root), "-o", str(objs)]) == EXIT_OK
+    side = json.loads((ws / "objects.summary.json").read_text())
+    assert side["summary"] == json.loads(objs.read_text())["summary"] and "objects" not in side
     assert main(["inventory", str(m), str(root), "-o", str(root / "o.json")]) == EXIT_USAGE
     assert main(["catalog", "build", str(objs), "-o", str(cat)]) == EXIT_OK
     capsys.readouterr()

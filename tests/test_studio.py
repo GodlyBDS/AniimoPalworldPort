@@ -299,6 +299,18 @@ def test_unknown_files_breakdown():
     assert br["folders"] == [("Data/Packs", 2), ("Data/Video", 1), ("(top level)", 1)]
 
 
+def test_objects_summary_read_without_loading_the_object_list(tmp_path):
+    from aniimo_pal.inventory import summary_path
+
+    objects = tmp_path / "objects.json"
+    assert steps.read_objects_summary(objects) is None
+    objects.write_text(json.dumps({"summary": {"object_count": 1}, "objects": [{}]}))
+    assert steps.read_objects_summary(objects)["summary"] == {"object_count": 1}  # small: loaded directly
+    assert steps.read_objects_summary(objects, max_full_load=1) == {}  # big, old version: not loaded
+    summary_path(objects).write_text(json.dumps({"summary": {"object_count": 2}}))
+    assert steps.read_objects_summary(objects, max_full_load=1)["summary"] == {"object_count": 2}
+
+
 def test_mods_information_is_complete():
     from aniimo_pal.studio import mods
 

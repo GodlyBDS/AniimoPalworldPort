@@ -168,3 +168,17 @@ def test_prismana_shiny_detected_as_both(tmp_path):
                    "Foxlet_Prismana_Shiny_A": ("prismana", "shiny_01"),
                    "Foxlet_Prismana_Shiny_B": ("prismana", "shiny_02")}
     assert any("numbered by name order" in w for w in sp["warnings"])
+
+
+def test_diagnostics_explain_missing_meshes(tmp_path):
+    b = ub.SerializedBuilder()
+    ub.add_creature(b, "Glimmer", bones=ub.DEFAULT_BONES, clips=["Idle"])
+    (tmp_path / "x.bundle").write_bytes(ub.bundle(b.build(), "CAB-x"))
+    doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
+    d = build_catalog(doc)["summary"]["diagnostics"]
+    assert d["renderers"] == d["renderers_with_mesh"] == d["renderers_in_hierarchy"] == 1
+    doc["objects"] = [o for o in doc["objects"] if o["class"] != "Mesh"]  # e.g. mesh bundle not read
+    cat = build_catalog(doc)
+    d = cat["summary"]["diagnostics"]
+    assert cat["species"] == [] and d["renderers_with_mesh"] == 0
+    assert d["missing_mesh_files"] == [{"cab": "cab-x", "count": 1, "container": "x.bundle"}]

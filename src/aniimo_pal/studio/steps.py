@@ -209,6 +209,30 @@ def unknown_files_breakdown(manifest: dict[str, Any], top: int = 8) -> dict[str,
     return {"extensions": exts.most_common(top), "folders": folders.most_common(top)}
 
 
+def read_objects_summary(objects: Path, max_full_load: int = 50 * 1024 ** 2) -> dict | None:
+    """The object list's summary without loading the (possibly 1 GB) object list itself.
+
+    None: no object list. {}: an object list from an older version without a summary file.
+    """
+    from aniimo_pal.inventory import summary_path
+
+    if not objects.is_file():
+        return None
+    side = read_json(summary_path(objects))
+    if side is not None:
+        return side
+    if objects.stat().st_size <= max_full_load:
+        return read_json(objects) or {}
+    return {}
+
+
+def is_older(path: Path, than: Path) -> bool:
+    try:
+        return path.stat().st_mtime < than.stat().st_mtime
+    except OSError:
+        return False
+
+
 def read_json(path: Path) -> dict | None:
     try:
         return json.loads(path.read_text(encoding="utf-8"))

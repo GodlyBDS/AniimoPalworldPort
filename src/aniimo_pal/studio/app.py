@@ -423,8 +423,11 @@ class StudioApp:
                 lines.append("  by extension: " + ", ".join(f"{e} {n}" for e, n in br["extensions"]))
                 lines.append("  by folder:    " + ", ".join(f"{d} {n}" for d, n in br["folders"]))
                 lines.append("")
-        o = steps.read_json(ws.objects)
-        if o:
+        o = steps.read_objects_summary(ws.objects)
+        if o is not None and "summary" not in o:
+            lines.append("Unity objects listed (made by an older version: run '2. List Unity objects' again to see "
+                         "its summary; finished bundles are reused).")
+        elif o:
             so = o["summary"]
             lines.append(f"Unity objects listed: {so['object_count']} in {so['container_count']} containers "
                          f"({so['container_errors']} container errors)")
@@ -434,7 +437,19 @@ class StudioApp:
                              f"took {so['seconds'] / 60:.1f} min")
         c = steps.read_json(ws.catalog)
         if c:
-            lines.append(f"Creatures found: {c['summary']['species_count']} (from {c['summary']['prefab_count']} prefabs)")
+            cs = c["summary"]
+            lines.append(f"Creatures found: {cs['species_count']} (from {cs['prefab_count']} prefabs)")
+            if steps.is_older(ws.catalog, ws.objects):
+                lines.append("  This creature list is older than the object list: click '3. Find creatures'.")
+            d = cs.get("diagnostics")
+            if d and not cs["species_count"]:
+                lines.append(f"  Why none: {d['renderers']} creature mesh renderers; with their mesh found "
+                             f"{d['renderers_with_mesh']}, attached to a GameObject {d['renderers_with_gameobject']}, "
+                             f"in a bone/transform hierarchy {d['renderers_in_hierarchy']}; root GameObjects "
+                             f"{d['root_gameobjects']}. Please share these numbers.")
+                for m in d["missing_mesh_files"][:5]:
+                    lines.append(f"    meshes missing from the object list: {m['count']} in "
+                                 f"{m['container'] or m['cab'] + ' (not read)'}")
         if not lines:
             lines = ["Nothing scanned yet. Click 'Run all three steps'."]
         self.scan_text.configure(state="normal")

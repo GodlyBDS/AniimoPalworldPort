@@ -216,7 +216,8 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
     h = _Hierarchy(idx)
 
     candidates = []
-    for root in sorted(h.roots(), key=lambda g: g["id"]):
+    roots = h.roots()
+    for root in sorted(roots, key=lambda g: g["id"]):
         cand = _prefab_candidate(idx, h, root, rules)
         if cand is not None:
             candidates.append(cand)
@@ -267,8 +268,39 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
             "species_count": len(species_list),
             "prefab_count": len(candidates),
             "unassigned_clip_count": sum(1 for c in idx.by_class.get("AnimationClip", []) if c["id"] not in claimed),
+            "diagnostics": _diagnostics(idx, h, roots, rules),
         },
         "species": species_list,
+    }
+
+
+def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], rules: CatalogRules) -> dict[str, Any]:
+    """Counts that explain an empty or small catalog (which link from renderer to prefab is missing)."""
+    renderer_classes = RENDERER_CLASSES + (STATIC_RENDERER_CLASSES if rules.include_static_meshes else ())
+    renderers = [r for cls in renderer_classes for r in idx.by_class.get(cls, [])]
+    with_mesh = with_go = in_hierarchy = 0
+    missing_mesh_targets: dict[str, int] = defaultdict(int)
+    for r in renderers:
+        mesh_ref = next((ref for ref in r["refs"] if ref["field"] == "m_Mesh"), None)
+        if idx.ref(r, "m_Mesh") is not None:
+            with_mesh += 1
+        elif mesh_ref is not None:
+            missing_mesh_targets[mesh_ref["target"].rsplit(":", 1)[0]] += 1
+        go = idx.ref(r, "m_GameObject")
+        if go is not None:
+            with_go += 1
+            if go["id"] in h.go_transform:
+                in_hierarchy += 1
+    owners = {sf["cab"]: c["path"] for c in idx.doc.get("containers", []) for sf in c.get("serialized_files", [])}
+    return {
+        "root_gameobjects": len(roots),
+        "renderers": len(renderers),
+        "renderers_with_mesh": with_mesh,
+        "renderers_with_gameobject": with_go,
+        "renderers_in_hierarchy": in_hierarchy,
+        # Where unresolved meshes live: the serialized file and the container that holds it (if any was read).
+        "missing_mesh_files": [{"cab": cab, "count": n, "container": owners.get(cab)}
+                               for cab, n in sorted(missing_mesh_targets.items(), key=lambda kv: -kv[1])[:10]],
     }
 
 

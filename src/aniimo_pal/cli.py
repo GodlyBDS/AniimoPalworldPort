@@ -411,7 +411,7 @@ def cmd_creature_preview(args: argparse.Namespace, config: Config) -> int:
 def cmd_inventory(args: argparse.Namespace, config: Config) -> int:
     import time
 
-    from aniimo_pal.inventory import build_inventory, default_workers
+    from aniimo_pal.inventory import build_inventory, default_workers, summary_doc, summary_path
     from aniimo_pal.manifest.io import check_output_location, read_manifest, write_json_atomic
 
     out = Path(args.output)
@@ -433,6 +433,7 @@ def cmd_inventory(args: argparse.Namespace, config: Config) -> int:
                           cache_dir=cache, all_objects=args.all_objects, progress=progress,
                           strategy="full" if args.full else "targeted")
     write_json_atomic(doc, out, indent=0 if doc["summary"]["object_count"] > 100_000 else config.manifest.indent)
+    write_json_atomic(summary_doc(doc), summary_path(out), indent=config.manifest.indent)
     s = doc["summary"]
     print(f"containers {s['container_count']} (errors {s['container_errors']}, with skinned meshes "
           f"{s['containers_with_skinned_meshes']}, deep-read {s['containers_deep_read']}, from cache "
@@ -483,6 +484,12 @@ def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
     write_json_atomic(doc, args.output, indent=config.manifest.indent)
     s = doc["summary"]
     print(f"species {s['species_count']} from {s['prefab_count']} prefabs; unassigned clips {s['unassigned_clip_count']}")
+    d = s["diagnostics"]
+    print(f"renderers {d['renderers']}: with mesh {d['renderers_with_mesh']}, with GameObject "
+          f"{d['renderers_with_gameobject']}, in a Transform hierarchy {d['renderers_in_hierarchy']}; "
+          f"root GameObjects {d['root_gameobjects']}")
+    for m in d["missing_mesh_files"]:
+        print(f"  meshes not in the object list: {m['count']} in {m['cab']} ({m['container'] or 'container not read'})")
     print(f"catalog:    {args.output}")
     return EXIT_OK
 

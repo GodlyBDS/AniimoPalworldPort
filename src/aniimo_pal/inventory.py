@@ -310,6 +310,17 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
     }
 
 
+def summary_path(objects_path: str | Path) -> Path:
+    """Small sidecar next to objects.json, so tools can show the summary without loading every object."""
+    p = Path(objects_path)
+    return p.with_name(p.stem + ".summary.json")
+
+
+def summary_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    return {k: doc.get(k) for k in ("schema_version", "generator", "created_utc", "manifest", "settings", "summary")} | \
+        {"schema": SCHEMA_ID + "-summary"}
+
+
 class ObjectIndex:
     """Lookup helpers over an ``aniimo-pal/objects`` document."""
 
