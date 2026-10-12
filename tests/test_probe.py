@@ -39,3 +39,46 @@ def test_probe_clip_reports_layout_and_decoder_verdict(tmp_path):
     rep = probe_clip(tmp_path, name="Ani_Wag", container="c.uab", skeleton_paths=["Root"])
     assert rep["structure"]["counts_add_up"] and rep["decoder"]["status"] == "decoded"
     assert rep["curve_sets"]["m_DenseClip"]["m_SampleArray"]["len"] == 6
+
+
+def test_follow_shows_mesh_and_material_held_by_a_data_asset():
+    """Stub resolver: a renderer's data asset (like XRender PlatformData) holding the mesh and the material."""
+    from aniimo_pal.probe import _follow, _reachable_classes
+
+    objs = {
+        "c:1": ("MonoBehaviour", {"m_Name": "P_X_Body_PlatformData", "m_Script": {"m_FileID": 0, "m_PathID": 9},
+                                  "m_Mesh": {"m_FileID": 0, "m_PathID": 2},
+                                  "m_Materials": [{"m_FileID": 0, "m_PathID": 3}]}),
+        "c:9": ("MonoScript", {"m_ClassName": "XRenderPlatformData"}),
+        "c:2": ("Mesh", {"m_Name": "M_X_Body_123", "m_VertexData": {"m_VertexCount": 812}, "m_BindPose": [0] * 40}),
+        "c:3": ("Material", {"m_Name": "MI_X_Body_01a", "m_Shader": {"m_FileID": 0, "m_PathID": 0},
+                             "m_SavedProperties": {"m_TexEnvs": [("_BaseMap", {"m_Texture": {"m_FileID": 0,
+                                                                                             "m_PathID": 4}})]}}),
+        "c:4": ("Texture2D", {"m_Name": "T_X_Body_D", "m_Width": 1024, "m_Height": 1024}),
+    }
+
+    class Reader:
+        def __init__(self, cls):
+            self.type = type("T", (), {"name": cls})
+
+    class Res:
+        readers = {k: Reader(v[0]) for k, v in objs.items()}
+
+        def read(self, oid):
+            return dict(objs[oid][1]) if oid in objs else None
+
+        def target(self, _reader, pptr):
+            pid = int(pptr.get("m_PathID") or 0)
+            return (f"c:{pid}", "resolved") if pid else (None, "null (empty slot)")
+
+        def summary(self, oid):
+            if oid not in objs:
+                return {}
+            return {"class": objs[oid][0], "name": objs[oid][1].get("m_Name") or objs[oid][1].get("m_ClassName")}
+
+    out = _follow(Res(), "c:1", depth=2)
+    assert out["script"]["class_name"] == "XRenderPlatformData"
+    by_field = {r["field"]: r for r in out["references"]}
+    assert by_field["m_Mesh"]["name"] == "M_X_Body_123" and by_field["m_Mesh"]["vertex_count"] == 812
+    assert by_field["m_Materials[0]"]["material"]["texture_slots"][0]["name"] == "T_X_Body_D"
+    assert {"Mesh", "Material"} <= _reachable_classes([{"class": "MonoBehaviour", "follow": out}])

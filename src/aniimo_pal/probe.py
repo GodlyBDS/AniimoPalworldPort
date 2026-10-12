@@ -144,8 +144,52 @@ def _script_class(res: _Resolver, reader, d: dict[str, Any]) -> dict[str, Any]:
     return script
 
 
+def _follow(res: _Resolver, oid: str, depth: int, seen: set[str] | None = None) -> dict[str, Any]:
+    """Decode a referenced data object (ScriptableObject/MonoBehaviour) and list what it references in turn.
+
+    Materials are expanded to shader and texture slots; further MonoBehaviours are followed to ``depth``.
+    """
+    seen = seen if seen is not None else set()
+    if oid in seen:
+        return {"note": "already shown"}
+    seen.add(oid)
+    reader = res.readers.get(oid)
+    d = res.read(oid) or {}
+    if reader is None or "_error" in d:
+        return {"error": d.get("_error", "not readable")}
+    out: dict[str, Any] = {"name": d.get("m_Name"), "script": _script_class(res, reader, d),
+                           "fields": sorted(k for k in d if not k.startswith("m_GameObject"))[:60], "references": []}
+    for field, file_id, path_id in iter_pptrs(d):
+        if field in ("m_GameObject", "m_Script"):
+            continue
+        ref = {"field": field, **_ref(res, reader, {"m_FileID": file_id, "m_PathID": path_id})}
+        if ref["status"] == "resolved":
+            if ref.get("class") == "Material":
+                ref["material"] = _material(res, ref["object"])
+            elif ref.get("class") == "Mesh":
+                md = res.read(ref["object"]) or {}
+                ref["vertex_count"] = (md.get("m_VertexData") or {}).get("m_VertexCount")
+                ref["bones"] = len(md.get("m_BindPose") or [])
+            elif ref.get("class") == "MonoBehaviour" and depth > 1:
+                ref["follow"] = _follow(res, ref["object"], depth - 1, seen)
+        out["references"].append(ref)
+        if len(out["references"]) >= 300:
+            out["truncated"] = True
+            break
+    return out
+
+
+def _reachable_classes(refs: list[dict[str, Any]]) -> set[str]:
+    out = set()
+    for r in refs:
+        out.add(r.get("class") or "?")
+        out |= _reachable_classes((r.get("follow") or {}).get("references") or [])
+    return out
+
+
 def probe_prefab(root: str | Path, *, name: str, container: str | None = None, object_ref: str | None = None,
-                 objects_doc: dict[str, Any] | None = None, include_materials: bool = True) -> dict[str, Any]:
+                 objects_doc: dict[str, Any] | None = None, include_materials: bool = True,
+                 follow_depth: int = 2) -> dict[str, Any]:
     root = Path(root)
     res = _Resolver(root, objects_doc)
     if container is None and object_ref and objects_doc:
@@ -168,6 +212,7 @@ def probe_prefab(root: str | Path, *, name: str, container: str | None = None, o
     if not matches:
         raise ToolkitError(f"no GameObject named {name!r} in {container}")
     oid, root_reader = matches[0]
+    prefab_objects = {o for o, _r in res.readers.items() if res.object_container.get(o) == container}
     out: dict[str, Any] = {"schema": "aniimo-pal/probe-prefab", "name": name, "object": oid, "container": container,
                            "matches": len(matches), "nodes": [], "renderers": [], "components": []}
     stack = [(oid, "")]
@@ -221,9 +266,14 @@ def probe_prefab(root: str | Path, *, name: str, container: str | None = None, o
                             continue
                         ref = _ref(res, reader, {"m_FileID": file_id, "m_PathID": path_id})
                         refs.append({"field": field, **ref})
+                    for ref in refs:  # data assets the component points at (e.g. XRender PlatformData)
+                        if ref.get("class") == "MonoBehaviour" and ref["status"] == "resolved" \
+                                and ref["object"] not in prefab_objects:
+                            ref["follow"] = _follow(res, ref["object"], depth=follow_depth)
                     comp_rec["references"] = refs[:400]
                     comp_rec["reference_count"] = len(refs)
                     comp_rec["referenced_classes"] = sorted({r.get("class") or "?" for r in refs})
+                    comp_rec["reachable_classes"] = sorted(_reachable_classes(refs))
                 out["components"].append(comp_rec)
         if transform is not None:
             treader, td = transform
@@ -245,17 +295,17 @@ def probe_prefab(root: str | Path, *, name: str, container: str | None = None, o
                                        if s["status"] == "resolved"),
         "material_slots_empty": sum(1 for r in out["renderers"] for s in r["material_slots"]
                                     if s["status"].startswith("null")),
-        "components_referencing_materials": [c["path"] + " " + str((c.get("script") or {}).get("class_name"))
-                                             for c in out["components"]
-                                             if "Material" in (c.get("referenced_classes") or [])],
-        "components_referencing_meshes": [c["path"] + " " + str((c.get("script") or {}).get("class_name"))
-                                          for c in out["components"] if "Mesh" in (c.get("referenced_classes") or [])],
+        "components_reaching_materials": [c["path"] + " " + str((c.get("script") or {}).get("class_name"))
+                                          for c in out["components"]
+                                          if "Material" in (c.get("reachable_classes") or [])],
+        "components_reaching_meshes": [c["path"] + " " + str((c.get("script") or {}).get("class_name"))
+                                       for c in out["components"] if "Mesh" in (c.get("reachable_classes") or [])],
     }
     return out
 
 
 def probe_clip(root: str | Path, *, name: str, container: str, objects_doc: dict[str, Any] | None = None,
-               skeleton_paths: list[str] | None = None) -> dict[str, Any]:
+               skeleton_paths: list[str] | None = None, raw: bool = False) -> dict[str, Any]:
     from aniimo_pal.convert.muscle_clip import ClipNotDecodable, decode_clip, describe, hash_lookup, structure_report
 
     res = _Resolver(Path(root), objects_doc)
@@ -285,7 +335,23 @@ def probe_clip(root: str | Path, *, name: str, container: str, objects_doc: dict
     try:
         clip = decode_clip(d, hashes)
         out["decoder"] = {"status": "decoded", "tracks": len(clip["tracks"]), "frames": clip["decoder"]["sampled_frames"],
-                          "warnings": clip["warnings"]}
+                          "warnings": clip["warnings"], "details": clip["decoder"],
+                          "quantized_search": out["structure"].get("quantized_search")}
     except ClipNotDecodable as exc:
-        out["decoder"] = {"status": "not decodable", "reason": str(exc)}
+        out["decoder"] = {"status": "not decodable", "reason": str(exc),
+                          "quantized_search": exc.report.get("quantized_search")}
+    if raw:  # the whole parsed clip, to study an undocumented format offline
+        out["raw"] = _json_safe(d)
     return out
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (bytes, bytearray)):
+        return list(value)
+    if isinstance(value, float) and value != value:
+        return None
+    return value

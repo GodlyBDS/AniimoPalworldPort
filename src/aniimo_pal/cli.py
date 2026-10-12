@@ -537,6 +537,24 @@ def _probe_out(report: dict[str, Any], output: str | None, lines: list[str]) -> 
     return EXIT_OK
 
 
+def _follow_lines(ref: dict[str, Any], indent: str) -> list[str]:
+    """Readable lines for what a followed data asset references (meshes, materials, textures)."""
+    follow = ref.get("follow")
+    if not follow or "references" not in follow:
+        return []
+    out = [f"{indent}{ref['field']} -> {follow.get('name')} "
+           f"({(follow.get('script') or {}).get('class_name') or '?'}): {len(follow['references'])} references"]
+    for r in follow["references"]:
+        if r.get("class") in ("Mesh", "Material", "Texture2D"):
+            extra = f", {r.get('vertex_count')} vertices" if r.get("class") == "Mesh" else ""
+            out.append(f"{indent}  {r['field']}: {r['class']} {r.get('name')}{extra}")
+            for t in (r.get("material") or {}).get("texture_slots", []):
+                out.append(f"{indent}    {t['slot']} -> {t.get('name') or t['status']}")
+        elif r.get("follow"):
+            out += _follow_lines(r, indent + "  ")
+    return out
+
+
 def cmd_probe_prefab(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.probe import probe_prefab
 
@@ -559,6 +577,8 @@ def cmd_probe_prefab(args: argparse.Namespace, config: Config) -> int:
         if c.get("reference_count"):
             lines.append(f"  component {(c.get('script') or {}).get('class_name') or '?'} on {c['path'] or '(root)'}: "
                          f"{c['reference_count']} references to {', '.join(c['referenced_classes'])}")
+            for r in c.get("references", []):
+                lines += _follow_lines(r, "    ")
     return _probe_out(rep, args.output, lines)
 
 
@@ -569,7 +589,8 @@ def cmd_probe_clip(args: argparse.Namespace, config: Config) -> int:
     paths = None
     if args.creature:
         paths = [b["path"] for b in (_read_json(args.creature).get("skeleton") or {}).get("bones", [])]
-    rep = probe_clip(args.root, name=args.name, container=args.container, objects_doc=objects, skeleton_paths=paths)
+    rep = probe_clip(args.root, name=args.name, container=args.container, objects_doc=objects, skeleton_paths=paths,
+                     raw=args.raw)
     st = rep["structure"]
     lines = [f"{rep['name']} ({rep['object']}): {st['bindings']} bindings need {st['curves_needed_by_bindings']} curves; "
              f"known curve sets hold {st['curves_in_known_sets']}",
@@ -577,6 +598,12 @@ def cmd_probe_clip(args: argparse.Namespace, config: Config) -> int:
                                         for k, v in st["curve_sets"].items()),
              f"decoder: {rep['decoder']['status']}" + (f" - {rep['decoder'].get('reason')}"
                                                        if rep["decoder"].get("reason") else "")]
+    reading = (rep["decoder"].get("details") or {}).get("quantized_reading")
+    if reading:
+        lines.append(f"QuantizedClip reading: {reading}")
+    for t in (rep["decoder"].get("quantized_search") or {}).get("top", [])[:3]:
+        lines.append(f"  candidate reading (score {t['score']}): " + ", ".join(f"{k}={v}" for k, v in t.items()
+                                                                            if k != "score"))
     return _probe_out(rep, args.output, lines)
 
 
@@ -856,6 +883,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--container", required=True, help="container path relative to ROOT")
     p.add_argument("--objects", help="objects.json (optional)")
     p.add_argument("--creature", help="creature.json: names bound bones through its skeleton")
+    p.add_argument("--raw", action="store_true",
+                   help="also write the whole parsed clip (numbers only) into the report, to study its format")
     p.add_argument("-o", "--output")
     p.set_defaults(func=cmd_probe_clip)
 

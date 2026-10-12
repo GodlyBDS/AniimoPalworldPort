@@ -198,29 +198,90 @@ class _Curves:
         raise ToolkitError(f"curve index {index} beyond the clip's curves")
 
 
+QUANTIZED_SET = "m_QuantizedClip"
+
+
+def _known_rows(curves: _Curves, times: list[float]):
+    import numpy as np
+
+    t = np.asarray(times, dtype=float)
+    streamed = np.array([[curves.value(i, x) for x in times] for i in range(curves.n_streamed)]).reshape(
+        curves.n_streamed, len(times))
+    dense = np.array([[curves.value(curves.n_streamed + i, x) for x in times] for i in range(curves.n_dense)]
+                     ).reshape(curves.n_dense, len(times))
+    constant = np.repeat(np.asarray(curves.constant, dtype=float).reshape(-1, 1), len(t), axis=1)
+    return {"streamed": streamed, "dense": dense, "constant": constant}
+
+
+def _rotation_rows(bindings: list[dict[str, Any]], widths: list[int]) -> list[list[int]]:
+    rows, index = [], 0
+    for b, w in zip(bindings, widths, strict=True):
+        if int(b.get("typeID", 0) or 0) == TRANSFORM_CLASS_ID and int(b.get("attribute", 0) or 0) == 2:
+            rows.append([index, index + 1, index + 2, index + 3])
+        index += w
+    return rows
+
+
 def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str]) -> dict[str, Any]:
     """Parsed AnimationClip dict (UnityPy ``parse_as_dict``) -> ``aniimo-pal/clip`` document.
 
     ``hash_to_path``: binding path hash -> transform path (Avatar TOS or skeleton paths).
-    Raises :class:`ClipNotDecodable` when curves live in a set this decoder does not know.
+    Raises :class:`ClipNotDecodable` when curves live in a set this decoder does not know, or when Aniimo's
+    ``m_QuantizedClip`` cannot be read with confidence (see :mod:`aniimo_pal.convert.quantized_clip`).
     """
+    import numpy as np
+
     report = structure_report(d)
-    if report["unknown_sets_with_curves"]:
+    unknown = dict(report["unknown_sets_with_curves"])
+    quantized = unknown.pop(QUANTIZED_SET, None)
+    if unknown:
         raise ClipNotDecodable("curves stored in a format not decoded yet: " + ", ".join(
-            f"{k} ({v} curves)" for k, v in report["unknown_sets_with_curves"].items()), report)
+            f"{k} ({v} curves)" for k, v in unknown.items()), report)
     data = _clip_data(d)
     curves = _Curves(data)
     bindings = (d.get("m_ClipBindingConstant") or {}).get("genericBindings") or []
     widths = binding_widths(bindings)
-    if curves.count != sum(widths):
-        raise ClipNotDecodable(f"curve count {curves.count} does not match the bindings ({sum(widths)} curves); "
-                               "the clip has curves this decoder does not see", report)
+    total = sum(widths)
+    if curves.count + (quantized or 0) != total:
+        raise ClipNotDecodable(f"curve count {curves.count + (quantized or 0)} does not match the bindings "
+                               f"({total} curves); the clip has curves this decoder does not see", report)
     muscle = d.get("m_MuscleClip") or {}
     rate = float(d.get("m_SampleRate") or 30.0) or 30.0
     start = float(muscle.get("m_StartTime") or 0.0)
     stop = float(muscle.get("m_StopTime") or start)
     n = max(0, int(round((stop - start) * rate)))
     times = [start + i / rate for i in range(n + 1)]
+    known = _known_rows(curves, times)
+    decoder: dict[str, Any] = {"curves": {"streamed": curves.n_streamed, "dense": curves.n_dense,
+                                          "constant": len(curves.constant)},
+                               "sampled_frames": len(times), "provenance": "verified (decoded from the built clip)"}
+    if quantized:
+        from aniimo_pal.convert import quantized_clip as qz
+
+        try:
+            parsed = qz.parse(data[QUANTIZED_SET])
+        except (KeyError, ValueError) as exc:
+            raise ClipNotDecodable(f"{QUANTIZED_SET}: layout not understood ({exc})", report) from exc
+        found = qz.search(parsed, known, np.asarray(times), _rotation_rows(bindings, widths), total)
+        best = found["best"]
+        report["quantized_search"] = {k: found[k] for k in ("tried", "top", "runner_up_score")}
+        if best is None or best["score"] < qz.ACCEPT_SCORE:
+            raise ClipNotDecodable(f"{QUANTIZED_SET}: no reading makes every rotation a unit quaternion "
+                                   f"(best {best['score'] if best else 0:.3f})", report)
+        rivals = [r for r in found["candidates"][1:] if r["score"] >= qz.ACCEPT_SCORE
+                  and not np.allclose(best["matrix"], r["matrix"], atol=1e-4, equal_nan=True)]
+        if rivals:
+            report["quantized_search"]["differing_readings_that_also_fit"] = [r["reading"] for r in rivals[:5]]
+            raise ClipNotDecodable(f"{QUANTIZED_SET}: {len(rivals) + 1} different readings fit; not choosing one",
+                                   report)
+        matrix = best["matrix"]
+        decoder["curves"]["quantized"] = quantized
+        decoder["quantized_reading"] = dict(best["reading"], score=round(best["score"], 4))
+        decoder["provenance"] = ("inferred: QuantizedClip layout derived from the data; reading chosen because "
+                                 "every rotation evaluates to a unit quaternion")
+    else:
+        matrix = np.vstack([known["streamed"], known["dense"], known["constant"]]) if total else \
+            np.zeros((0, len(times)))
     tracks, float_tracks, unknown_hashes = [], [], set()
     index = 0
     for b, width in zip(bindings, widths, strict=True):
@@ -228,12 +289,13 @@ def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str]) -> dict[str, An
         path = hash_to_path.get(h)
         attr = int(b.get("attribute", 0) or 0)
         is_transform = int(b.get("typeID", 0) or 0) == TRANSFORM_CLASS_ID and attr in ATTR_CHANNEL
-        samples = [[curves.value(index + c, t) for c in range(width)] for t in times]
+        block = matrix[index:index + width]
         index += width
         if path is None:
             unknown_hashes.add(h)
             path = f"hash:{h}"
-        keys = [{"t": t, "v": v, "in": [0.0] * width, "out": [0.0] * width} for t, v in zip(times, samples, strict=True)]
+        keys = [{"t": t, "v": [float(x) for x in block[:, f]], "in": [0.0] * width, "out": [0.0] * width}
+                for f, t in enumerate(times)]
         if is_transform:
             channel = ATTR_CHANNEL[attr][0]
             if channel == "rotation":
@@ -254,9 +316,7 @@ def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str]) -> dict[str, An
         "tracks": tracks, "float_tracks": float_tracks,
         "events": [{"time": float(e.get("time", 0)), "function": e.get("functionName"), "data": e.get("data"),
                     "float": e.get("floatParameter"), "int": e.get("intParameter")} for e in d.get("m_Events") or []],
-        "warnings": warnings, "source": "unitypy-muscle-clip",
-        "decoder": {"curves": {"streamed": curves.n_streamed, "dense": curves.n_dense, "constant": len(curves.constant)},
-                    "sampled_frames": len(times), "provenance": "verified (decoded from the built clip)"},
+        "warnings": warnings, "source": "unitypy-muscle-clip", "decoder": decoder,
     }
 
 

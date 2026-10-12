@@ -118,6 +118,34 @@ def _inventory_seed_container(path: str, all_objects: bool) -> dict[str, Any]:
             "seconds": round(time.monotonic() - started, 3)}
 
 
+def _parse_behaviour_objects(path: str, all_objects: bool, object_ids: list[str]) -> dict[str, Any]:
+    """Worker: decode the given MonoBehaviours of one container with their references.
+
+    These are data assets that components on creature prefabs point at (e.g. a renderer's platform data
+    holding its mesh and materials); other containers' objects are not touched.
+    """
+    from aniimo_pal.adapters.unitypy_adapter import cab_key
+
+    started = time.monotonic()
+    wanted = set(object_ids)
+    adapter = UnityPyAdapter()
+    env = adapter.load(path)
+    node_cache: dict = {}
+    objects = []
+    for sf in adapter.serialized_files(env):
+        cab = cab_key(sf.name)
+        externals = [cab_key(e.path) for e in sf.externals]
+        for path_id, obj in sf.objects.items():
+            if f"{cab}:{path_id}" in wanted:
+                try:
+                    cls = obj.type.name
+                except Exception:
+                    continue
+                if cls == "MonoBehaviour":
+                    objects.append(adapter._object_record(obj, cab, externals, cls, node_cache, True))
+    return {"objects": objects, "seconds": round(time.monotonic() - started, 3)}
+
+
 def default_workers() -> int:
     return max(1, min(8, (os.cpu_count() or 2) - 1))
 
@@ -172,12 +200,19 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
             errors[entry["path"]] = f"{type(exc).__name__}: {exc}"[:500]
     ok_entries = [e for e in candidates if e["path"] not in errors]
 
-    def run_phase(entries: list[dict[str, Any]], fn, tag: str, label: str) -> dict[str, dict[str, Any]]:
-        """Run ``fn`` per container (cached, parallel); returns {rel: result}."""
+    def run_phase(entries: list[dict[str, Any]], fn, tag: str, label: str,
+                  extra: dict[str, list[str]] | None = None) -> dict[str, dict[str, Any]]:
+        """Run ``fn`` per container (cached, parallel); returns {rel: result}.
+
+        ``extra``: per-container argument passed to ``fn`` (and part of the cache key).
+        """
         out: dict[str, dict[str, Any]] = {}
         todo, done = [], 0
         for entry in entries:
             digest = entry["hashes"].get(algo)
+            if extra is not None:
+                arg_key = hashlib.sha1("\n".join(sorted(extra[entry["path"]])).encode()).hexdigest()[:12]
+                digest = f"{digest}-{arg_key}" if digest else None
             cf = cache / f"{tag}-{digest}.json" if cache and digest else None
             if cf and cf.is_file():
                 try:
@@ -204,7 +239,8 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
         if workers <= 1 or len(todo) <= 1:
             for entry, cf in todo:
                 try:
-                    res = fn(str(root_path / entry["path"]), all_objects)
+                    args = (extra[entry["path"]],) if extra is not None else ()
+                    res = fn(str(root_path / entry["path"]), all_objects, *args)
                 except Exception as exc:  # one bad container must not stop the inventory
                     log.warning("%s failed for %s: %s", label, entry["path"], exc)
                     res = {"error": f"{type(exc).__name__}: {exc}"[:500]}
@@ -212,7 +248,9 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
         else:
             # "spawn" everywhere: what Windows uses, and safe with threads in the parent (e.g. the Studio).
             with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
-                futures = {pool.submit(fn, str(root_path / e["path"]), all_objects): (e, cf) for e, cf in todo}
+                futures = {pool.submit(fn, str(root_path / e["path"]), all_objects,
+                                       *((extra[e["path"]],) if extra is not None else ())): (e, cf)
+                           for e, cf in todo}
                 for fut in as_completed(futures):
                     entry, cf = futures[fut]
                     try:
@@ -225,6 +263,7 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
 
     surveys: dict[str, dict[str, Any]] = {}
     deep: dict[str, dict[str, Any]] = {}
+    behaviour_assets: dict[str, dict[str, Any]] = {}  # id -> decoded MonoBehaviour data asset
     rounds = 0
     if strategy == "full":
         deep = run_phase(ok_entries, _inventory_container, deep_tag, "deep read")
@@ -237,26 +276,56 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
         wanted = {rel for rel, res in surveys.items()
                   if any((res.get("class_counts") or {}).get(c, 0) for c in DEEP_TRIGGER_CLASSES)}
         known_cabs: set[str] = set()
-        while wanted and rounds < 8:
+        parsed_behaviours: set[str] = set()
+        behaviour_hops = 0
+        new_behaviours: list[dict[str, Any]] = []
+        while (wanted or new_behaviours) and rounds < 12:
             rounds += 1
+            new: dict[str, dict[str, Any]] = {}
             batch = [by_rel[r] for r in sorted(wanted) if r not in deep]
-            if rounds == 1:  # creature prefab containers: components decoded too
-                new = run_phase(batch, _inventory_seed_container, deep_tag + "-components",
-                                f"deep read (round {rounds})")
-            else:
-                new = run_phase(batch, _inventory_container, deep_tag, f"deep read (round {rounds})")
-            deep.update(new)
-            for res in new.values():
-                for sf in res.get("serialized_files", []):
-                    known_cabs.add(sf["cab"])
-            # Follow references into containers not read yet (shared materials, textures, animations).
-            wanted = set()
-            for res in new.values():
-                for obj in res.get("objects", []):
+            if batch:
+                if rounds == 1:  # creature prefab containers: components decoded too
+                    new = run_phase(batch, _inventory_seed_container, deep_tag + "-components",
+                                    f"deep read (round {rounds})")
+                else:
+                    new = run_phase(batch, _inventory_container, deep_tag, f"deep read (round {rounds})")
+                deep.update(new)
+                for res in new.values():
+                    for sf in res.get("serialized_files", []):
+                        known_cabs.add(sf["cab"])
+                    for obj in res.get("objects", []):
+                        if obj["class"] == "MonoBehaviour" and obj["refs"]:
+                            parsed_behaviours.add(obj["id"])
+                            if rounds == 1:
+                                new_behaviours.append(obj)
+            # Data assets that components on creature prefabs point at (two hops at most), decoded with refs.
+            found: list[dict[str, Any]] = []
+            if new_behaviours and behaviour_hops < 2:
+                behaviour_hops += 1
+                targets: dict[str, set[str]] = defaultdict(set)
+                for obj in new_behaviours:
                     for ref in obj["refs"]:
                         cab = ref["target"].rsplit(":", 1)[0]
-                        if cab not in known_cabs and cab in cab_owner and cab_owner[cab] not in deep:
-                            wanted.add(cab_owner[cab])
+                        if ref["field"] not in ("m_GameObject", "m_Script") and ref["target"] not in parsed_behaviours \
+                                and cab in cab_owner:
+                            targets[cab_owner[cab]].add(ref["target"])
+                extra = {rel: sorted(ids) for rel, ids in targets.items()}
+                got = run_phase([by_rel[r] for r in sorted(extra) if r in by_rel], _parse_behaviour_objects,
+                                deep_tag + "-assets", f"component data (hop {behaviour_hops})", extra=extra)
+                for rel, res in got.items():
+                    for obj in res.get("objects", []):
+                        obj["container"] = rel
+                        parsed_behaviours.add(obj["id"])
+                        behaviour_assets[obj["id"]] = obj
+                        found.append(obj)
+            new_behaviours = found
+            # Follow references into containers not read yet (shared materials, textures, animations).
+            wanted = set()
+            for obj in [o for res in new.values() for o in res.get("objects", [])] + found:
+                for ref in obj["refs"]:
+                    cab = ref["target"].rsplit(":", 1)[0]
+                    if cab not in known_cabs and cab in cab_owner and cab_owner[cab] not in deep:
+                        wanted.add(cab_owner[cab])
 
     containers, objects = [], []
     class_counts: dict[str, int] = defaultdict(int)
@@ -274,6 +343,7 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
         containers.append(record)
         if rel in deep:
             for obj in deep[rel].get("objects", []):
+                obj = behaviour_assets.pop(obj["id"], obj)
                 obj["container"] = rel
                 objects.append(obj)
         else:
@@ -292,6 +362,13 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
                                     "container": rel})
         for cls, n in record["class_counts"].items():
             class_counts[cls] += n
+    if behaviour_assets:  # decoded data assets in surveyed containers replace their name-only records
+        pos = {o["id"]: i for i, o in enumerate(objects) if o["id"] in behaviour_assets}
+        for oid, obj in behaviour_assets.items():
+            if oid in pos:
+                objects[pos[oid]] = obj
+            else:
+                objects.append(obj)
 
     cab_owner_all: dict[str, str] = {}
     duplicate_cabs = set()

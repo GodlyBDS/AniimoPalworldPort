@@ -202,6 +202,38 @@ def _element_key(field: str) -> str:
     return head + "]" if sep else ""
 
 
+def _data_asset_parts(idx: ObjectIndex, refs: list[dict[str, Any]], depth: int = 2
+                      ) -> tuple[list[str], list[str], str] | None:
+    """Materials and the mesh held by data assets a component references (not other components).
+
+    Returns (material ids, [mesh id], evidence path) or None. When an asset lists several meshes (e.g. per
+    platform or LOD), the one under a field naming "default" wins, else the first; its materials come from the
+    same list element.
+    """
+    for ref in refs:
+        target = idx.get(ref["target"])
+        if not target or target["class"] != "MonoBehaviour" or any(r["field"] == "m_GameObject"
+                                                                  for r in target["refs"]):
+            continue  # not a decoded data asset (components sit on GameObjects)
+        name = target.get("name") or ref["target"]
+        inner = [r for r in target["refs"] if r["field"] != "m_Script"]
+        meshes = [r for r in inner if (idx.get(r["target"]) or {}).get("class") == "Mesh"]
+        mats = [r for r in inner if (idx.get(r["target"]) or {}).get("class") == "Material"]
+        if meshes or mats:
+            mesh = next((m for m in meshes if "default" in m["field"].lower()), meshes[0] if meshes else None)
+            if mesh is not None:
+                key = _element_key(mesh["field"])
+                same = [r for r in mats if key and _element_key(r["field"]) == key]
+                mats = same or mats
+            return ([r["target"] for r in mats], [mesh["target"]] if mesh else [],
+                    f"{ref['field']}:{name}" + (f".{mesh['field']}" if mesh else ""))
+        if depth > 1:
+            deeper = _data_asset_parts(idx, inner, depth - 1)
+            if deeper:
+                return deeper[0], deeper[1], f"{ref['field']}:{name} -> {deeper[2]}"
+    return None
+
+
 def _cab_owners(idx: ObjectIndex) -> dict[str, str]:
     owners = getattr(idx, "_cab_owner_cache", None)
     if owners is None:
@@ -253,6 +285,13 @@ def _material_chain(idx: ObjectIndex, r: dict[str, Any], go: dict[str, Any],
             mats = [ref["target"] for ref in group if (idx.get(ref["target"]) or {}).get("class") == "Material"]
             meshes = [ref["target"] for ref in group if (idx.get(ref["target"]) or {}).get("class") == "Mesh"]
             evidence = f"component:{label}{'.' + key if key else ''}"
+            if not mats and not meshes:
+                # The component may point at a data asset (e.g. XRender PlatformData) that holds them.
+                hop = _data_asset_parts(idx, [ref for ref in group if ref["field"] not in ("m_GameObject",
+                                                                                           "m_Script")])
+                if hop:
+                    mats, meshes, via = hop
+                    evidence += f" -> {via}"
             if mats and not out["materials"]:
                 out.update(materials=mats, source=evidence)
             if len(meshes) == 1 and out["mesh"] is None:

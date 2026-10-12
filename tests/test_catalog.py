@@ -537,3 +537,32 @@ def test_id_coverage_lists_model_bundles_without_a_creature_and_falls_back_to_th
     assert miss["id"] == "10363" and miss["codename"] == "bornlion" and "empty mesh slots" in miss["reason"]
     lunara = next(s for s in cat["species"] if s["game_id"] == "10371")
     assert lunara["model_only"] and any("only the character model" in w for w in lunara["warnings"])
+
+
+def test_mesh_and_material_found_through_a_renderer_components_data_asset(tmp_path):
+    """Aniimo layout seen with `probe prefab`: SkinnedMeshRenderer without mesh/material slots, an
+    XSkinnedMeshRenderer component on the same GameObject whose m_PlatformData points at a data asset."""
+    doc, oid, root, smr, mat, mesh, _gos = _component_game(tmp_path)
+    go_id = f"cab-p:{smr.data['m_GameObject']['m_PathID']}"
+    go = next(o for o in doc["objects"] if o["id"] == go_id)
+
+    def rec(i, cls, name, refs, info=None):
+        return {"id": f"cab-d:{i}", "cab": "cab-d", "path_id": i, "class": cls, "class_id": 0, "name": name,
+                "info": info or {}, "container": "d.uab", "refs": refs}
+    doc["objects"] += [
+        rec(1, "MonoScript", "XSkinnedMeshRenderer", [], {"class_name": "XSkinnedMeshRenderer"}),
+        rec(2, "MonoBehaviour", None, [{"field": "m_GameObject", "target": go_id},
+                                       {"field": "m_Script", "target": "cab-d:1"},
+                                       {"field": "m_LodParent", "target": "cab-d:4"},
+                                       {"field": "m_PlatformData", "target": "cab-d:3"}]),
+        rec(3, "MonoBehaviour", "P_Parmon_10351_M_Parmon_10351_Body_PlatformData", [
+            {"field": "m_Default.m_Mesh", "target": f"cab-p:{mesh}"},
+            {"field": "m_Default.m_Materials[0]", "target": f"cab-p:{mat}"}]),
+        rec(4, "MonoBehaviour", None, [{"field": "m_GameObject", "target": root["id"]}]),  # another component
+    ]
+    go["refs"].append({"field": "m_Component[5].component", "target": "cab-d:2"})
+    (skin,) = build_catalog(doc)["species"][0]["skeleton"]["skins"]
+    assert skin["materials"] == [f"cab-p:{mat}"]
+    assert skin["materials_source"] == ("component:XSkinnedMeshRenderer -> m_PlatformData:"
+                                        "P_Parmon_10351_M_Parmon_10351_Body_PlatformData.m_Default.m_Mesh")
+    assert skin["mesh_name"] == "M_Parmon_10351_Body_42424242" and skin["mesh_provenance"] == "verified-link"
