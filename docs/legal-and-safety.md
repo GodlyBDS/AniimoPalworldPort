@@ -15,7 +15,8 @@ publishing any mod.
 - Detects formats and **reports** protection markers: the UnityFS encryption flag
   (UnityCN-style), prefixed or offset bundle signatures, Unity-named files with no
   recognisable structure, and high-entropy unknown data.
-- Marks such files `supported: false`. Later pipeline stages skip them.
+- Marks such files `supported: false` (encryption flag, or a bundle signature
+  that is not at byte 0). Later pipeline stages skip them.
 
 ## What the toolkit will not do
 

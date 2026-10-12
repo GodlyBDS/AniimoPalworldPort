@@ -411,6 +411,10 @@ class StudioApp:
                       f"Supported for extraction: {s['supported_count']}",
                       f"Encryption-flagged (skipped, never decrypted): {s['encrypted_count']}",
                       f"Unity versions: {', '.join(s.get('unity_versions', {})) or 'unknown'}", ""]
+            prefixed = sum(1 for f in m["files"] if (f.get("details") or {}).get("signature_offset"))
+            if prefixed:
+                lines.insert(-1, f"Unity bundles behind a prefix (custom container or obfuscation; skipped, "
+                                 f"never stripped): {prefixed}")
             unknown = s["by_kind"].get("unknown_high_entropy", 0)
             if unknown:
                 lines.append(f"Note: {unknown} files are unrecognised high-entropy data (custom or protected formats, "

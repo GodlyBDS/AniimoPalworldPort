@@ -166,8 +166,11 @@ def scan_file(path: Path, rel: str, cfg: ScanConfig) -> dict[str, Any]:
         hashes={name: h.hexdigest() for name, h in hashers.items()},
         kind=det.kind,
         category=info.category,
+        # Encryption-flagged bundles and bundles behind a prefix (custom container or obfuscation) are
+        # reported only: prefixes are never stripped (docs/legal-and-safety.md).
         supported=bool(info.route and info.route.startswith(SUPPORTED_ROUTES_PREFIXES)
-                       and det.details.get("encryption_flag") is not True),
+                       and det.details.get("encryption_flag") is not True
+                       and not det.details.get("signature_offset")),
         route=info.route,
         confidence=det.confidence,
         entropy=round(shannon_entropy(head), 3),

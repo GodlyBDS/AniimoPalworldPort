@@ -70,6 +70,13 @@ def test_summary_counts(game_tree):
     assert s["unity_versions"]["2019.4.40f1"] == 1
 
 
+def test_prefixed_bundle_reported_not_supported(tmp_path):
+    (tmp_path / "a.uab").write_bytes(b"\x13\x37" * 40 + synthetic.unityfs_bundle())
+    entry = scan(tmp_path, ScanConfig())["files"][0]
+    assert entry["kind"] == "unity_bundle" and entry["details"]["signature_offset"] == 80
+    assert entry["supported"] is False  # prefixes are never stripped
+
+
 def test_encrypted_bundle_not_supported(game_tree):
     root, _ = game_tree
     entries = {f["path"]: f for f in scan(root, ScanConfig())["files"]}

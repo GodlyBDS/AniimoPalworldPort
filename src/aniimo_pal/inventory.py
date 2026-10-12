@@ -138,7 +138,9 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
         if patterns and not any(fnmatch.fnmatchcase(entry["path"], p) for p in patterns):
             continue
         if not entry.get("supported"):
-            reason = "encryption flag set" if entry.get("details", {}).get("encryption_flag") else "not supported"
+            details = entry.get("details", {})
+            reason = ("encryption flag set" if details.get("encryption_flag") else
+                      "bundle signature behind a prefix" if details.get("signature_offset") else "not supported")
             skipped.append({"path": entry["path"], "reason": reason})
             continue
         candidates.append(entry)
