@@ -26,10 +26,12 @@ sources = [
 provenance = "user"
 changes_model = false           # Shiny looks are colour palettes only: same mesh, same form
 shiny_per_creature = 12         # user: every Aniimo has 12 Shiny looks
-named = ["dazzling", "shadow", "umbral"]  # umbral = galaxy-purple palette; how these relate to the 12 is open
+named = ["dazzling", "shadow"]  # special Shiny looks; whether they are part of the 12 is still open
+# Umbral: galaxy-purple palette, NOT one of the 12 Shiny looks but a separate 13th version (user).
+extra = ["umbral"]
 open_questions = [
   "Are Dazzling and Shadow part of the 12, or extra (12 numbered + 2)?",
-  "Is Umbral one of the 12 or separate?",
+  "How rare is Umbral compared with the Shiny looks, and can it combine with Prismana?",
   "Do Dazzling/Shadow add a visual effect (glow, aura) beyond colour?",
   "Where does the game store the palettes (data table, palette texture, shader parameters)?",
 ]
