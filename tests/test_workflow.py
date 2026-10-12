@@ -134,3 +134,24 @@ def test_cli_extract_reports_errors(pipeline, capsys):
     c, path = _foxlet(pipeline)
     (pipeline["root"] / "StreamingAssets" / "foxlet.bundle").unlink()
     assert main(["creature", "extract", str(path), "--root", str(pipeline["root"])]) == EXIT_CHECK_FAILED
+
+
+def test_assetripper_name_keys_strip_only_build_suffixes():
+    from aniimo_pal.extract import _name_keys
+
+    assert _name_keys("M_Parmon_10184_Body_-1771000540") == ["m_parmon_10184_body_1771000540", "m_parmon_10184_body"]
+    assert _name_keys("MI_Parmon_10184_Body_01a_9632378D") == ["mi_parmon_10184_body_01a_9632378d",
+                                                              "mi_parmon_10184_body_01a"]
+    assert _name_keys("NG_P_Parmon_1018403") == ["ng_p_parmon_1018403"]  # 7-digit form IDs stay
+    assert _name_keys("Ani_Parmon_10184_Idle") == ["ani_parmon_10184_idle"]
+    assert _name_keys("Foxlet_Body_12345678") == ["foxlet_body_12345678"]  # 8 digits without hex letters stay
+
+
+def test_unassigned_sample_prefers_files_of_this_creature():
+    from aniimo_pal.extract import _related_unassigned
+
+    files = ["x/Assets/Shader/Hidden_Blit.json", "x/Assets/res/10184/M_Parmon_10184.glb", "x/Assets/a/Body.png",
+             "x/Assets/res/10184/M_Parmon_10184.glb.meta", "x/done.png"]
+    assert _related_unassigned(files, {"x/done.png"}, ["M_Parmon_10184_Body_-1771000540"]) == [
+        "x/Assets/res/10184/M_Parmon_10184.glb"]
+    assert _related_unassigned(files, set(), ["Nothing_Here"])[:1] == ["x/Assets/Shader/Hidden_Blit.json"]

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -266,6 +266,28 @@ def _norm(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
+# Build-time suffixes seen on real object names (M_Parmon_10184_Body_-1771000540, MI_..._01a_9632378D):
+# a negative or 9+ digit number, or 8 hex digits containing a letter. 7-digit form IDs are kept.
+_BUILD_SUFFIX = re.compile(r"_(?:-\d{6,}|\d{9,}|(?=[0-9A-Fa-f]*[A-Fa-f])[0-9A-Fa-f]{8})$")
+
+
+def _related_unassigned(files: list[str], assigned: set[str], unmatched_names: list[str], limit: int = 60) -> list[str]:
+    distinctive = {t for n in unmatched_names for t in _norm(n).split("_") if len(t) >= 4 and not t.isalpha()} or \
+        {t for n in unmatched_names for t in _norm(n).split("_") if len(t) >= 5}
+    rest = [f for f in files if f not in assigned and not f.endswith(".meta")]
+    related = [f for f in rest if distinctive & set(_norm(Path(f).stem).split("_"))]
+    return (related or rest)[:limit]
+
+
+def _name_keys(name: str) -> list[str]:
+    """Match keys for an object name: exact, then without a build-time hash suffix."""
+    keys = [_norm(name)]
+    stripped = _BUILD_SUFFIX.sub("", name)
+    if stripped != name and stripped:
+        keys.append(_norm(stripped))
+    return keys
+
+
 def assetripper_export_creature(creature: dict[str, Any], creature_dir: str | Path, game_root: str | Path,
                                 executable, *, mode: str = "primary", include_proposed: bool = False,
                                 replace: bool = False) -> dict[str, Any]:
@@ -314,7 +336,11 @@ def assetripper_export_creature(creature: dict[str, Any], creature_dir: str | Pa
         if not name:
             return []
         exts = _ROLE_EXTENSIONS[mode].get(role, ())
-        return [f for f in files_by_stem.get(_norm(name), []) if f.lower().endswith(exts)]
+        for i, key in enumerate(_name_keys(name)):
+            found = [f for f in files_by_stem.get(key, []) if f.lower().endswith(exts)]
+            if found and (i == 0 or len(found) == 1):  # suffix-stripped matches only when unambiguous
+                return found
+        return []
 
     matches = []
     for i, a in selected:
@@ -346,10 +372,13 @@ def assetripper_export_creature(creature: dict[str, Any], creature_dir: str | Pa
                     "files_written": len(all_files)},
         "assets": matches,
         "prefabs": prefab_matches,
-        # Exported files no asset was matched to: shows how AssetRipper named things when matching fails.
-        "unassigned_files_sample": sorted(
-            set(f.relative_to(creature_dir).as_posix() for f in all_files)
-            - {f for m in matches + prefab_matches for f in m["files"]})[:60],
+        # Exported files no asset was matched to, preferring ones that share a name part with an unmatched
+        # asset (e.g. the creature ID): shows how AssetRipper named things when matching fails.
+        "unassigned_files_sample": _related_unassigned(
+            [f.relative_to(creature_dir).as_posix() for f in all_files],
+            {f for m in matches + prefab_matches for f in m["files"]},
+            [m["name"] for m in matches if not m["files"] and m["name"]]),
+        "extension_counts": dict(sorted(Counter(p.suffix.lower() or "(none)" for p in all_files).items())),
         "log_tail": log_tail,
     }
     write_json_atomic(report, base / f"report-{mode}.json")

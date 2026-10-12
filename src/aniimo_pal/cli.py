@@ -363,9 +363,10 @@ def cmd_creature_assetripper(args: argparse.Namespace, config: Config) -> int:
         print(f"  ... and {len(unmatched) - 40} more unmatched assets")
     sample = report.get("unassigned_files_sample", [])
     if unmatched and sample:
-        print("  exported files not matched to any asset (sample):")
-        for f in sample[:30]:
+        print("  exported files not matched to any asset (those sharing a name part with this creature first):")
+        for f in sample[:40]:
             print(f"    {f}")
+        print("  exported file types: " + ", ".join(f"{e} {n}" for e, n in report.get("extension_counts", {}).items()))
     if s["files_written"] == 0:
         print("  AssetRipper wrote no files. Its log: " + " | ".join(report.get("log_tail") or []))
     return EXIT_OK
