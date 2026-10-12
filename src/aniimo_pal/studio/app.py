@@ -642,6 +642,13 @@ class StudioApp:
             info.append(f"Project status: {c['status']}  ·  decisions needed: {len(todo)}")
             done = [steps.STEP_LABELS[s] for s in steps.CREATURE_STEPS if steps.step_done(path.parent, s)]
             info.append("Steps done: " + (", ".join(done) if done else "none yet"))
+            conv = steps.read_json(path.parent / "convert" / "report.json")
+            if conv:
+                info.append("Model parts (last conversion):")
+                for m in conv.get("meshes", []):
+                    reason = f": {m.get('error')}" if m.get("status") != "ok" else ""
+                    attach = f" (attached to {m['attached_to']})" if m.get("attached_to") else ""
+                    info.append(f"  {m.get('status', '?').upper()} {m.get('mesh')}{attach}{reason}")
             for ctx in CONTEXTS:
                 p = outcome_probabilities(c["variants"], ctx)
                 info.append(f"{ctx}: Shiny {one_in(p['any_shiny'])}, Prismana {one_in(p['any_prismana'])}, "
