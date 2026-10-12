@@ -426,14 +426,21 @@ def cmd_creature_convert(args: argparse.Namespace, config: Config) -> int:
             print(f"    {n} x {reason}")
         for e in clip_errors[:8]:
             print(f"    e.g. {e['name']}")
+    checked = [c for c in (model.get("clips") or []) if c.get("evaluated_check")]
+    if checked:
+        worst = max(checked, key=lambda c: c["evaluated_check"]["max_bone_head_error_m"])
+        ev = worst["evaluated_check"]
+        print(f"  evaluated pose check (Blender world space, {len(checked)} clips): largest bone head error "
+              f"{ev['max_bone_head_error_m']:.3g} m ({worst['name']}, {ev['worst_bone']}); armature object at "
+              f"identity: {ev['armature_world_is_identity']}")
     turned = []
     for c in (model.get("clips") or []):
         frames = ((c.get("validation") or {}).get("pose_vs_rest") or {}).get("frames") or []
         if frames and max(f["turn_deg"] for f in frames) > 45:
             turned.append(f"{c['name']} {max(f['turn_deg'] for f in frames):.0f}deg")
     if turned:
-        print(f"  NOTE {len(turned)} clip(s) turn the whole skeleton more than 45 deg against its rest pose in the "
-              f"decoded data (before Blender): {', '.join(turned[:6])}")
+        print(f"  NOTE {len(turned)} clip(s) have a best-fit turn of the bone cloud over 45 deg against the rest pose "
+              f"in the decoded data (a hint, not proof: one turned limb can cause it): {', '.join(turned[:6])}")
     comp = report["completeness"]
     print(f"geometry: {comp['geometry']['status']}"
           + (f" (missing: {', '.join(comp['geometry']['missing_parts'][:6])})" if comp["geometry"]["missing_parts"] else ""))
@@ -686,6 +693,11 @@ def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
             print(f"  unresolved: {e}")
     for m in d["missing_mesh_files"]:
         print(f"  meshes not in the object list: {m['count']} in {m['cab']} ({m['container'] or 'container not read'})")
+    if d.get("duplicate_objects"):
+        print(f"objects stored in more than one container: {d['duplicate_objects']} (the most completely read copy "
+              f"is used); copies that differ: {d.get('conflicting_copies', 0)}")
+        for c in d.get("conflict_examples", [])[:5]:
+            print(f"  differs: {c['class']} {c['name']} ({', '.join(c['differs_in'][:4])}); used: {c['chosen']}")
     cov = s.get("id_coverage")
     if cov:
         print(f"creature IDs with a model bundle: {cov['ids_with_model_bundle']}, in the catalog {cov['in_catalog']}"

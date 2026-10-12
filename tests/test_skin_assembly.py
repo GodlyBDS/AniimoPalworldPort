@@ -118,3 +118,35 @@ def test_rigged_mesh_vertices_sit_on_their_bones(tmp_path):
         bone = arm.data.bones[obj.vertex_groups[group.group].name]
         dist = ((obj.matrix_world @ v.co) - (arm.matrix_world @ bone.head_local)).length
         assert dist < 0.05, (bone.name, dist)
+
+
+def test_biped_root_above_the_joints_does_not_turn_the_deformation(tmp_path):
+    """Real 10351: 'Bip001' (3ds Max biped orientation) is a transform above the skinned joints but not a joint.
+    Blender's glTF importer then put the armature object at Bip001's transform, and a clip that lifts the body
+    moved the mesh sideways. Ancestors are now joints: the armature sits at the identity root."""
+    bpy = pytest.importorskip("bpy")
+    from aniimo_pal.convert.blender_runner import run_job
+
+    sk = {"Bip001": {"position": [0, 0.66, 0], "rotation": [-0.5, 0.5, 0.5, 0.5], "scale": [1, 1, 1]},
+          "Bip001/Pelvis": {"position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+          "Bip001/Pelvis/Spine": {"position": [0.2, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+          "Bip001/Pelvis/Tail": {"position": [-0.3, 0, 0.1], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}}
+    joints = ["Bip001/Pelvis", "Bip001/Pelvis/Spine", "Bip001/Pelvis/Tail"]
+    mesh = gb.assetripper_like_mesh_glb(tmp_path / "mesh.glb", sk, joints)
+    assemble_skinned_glb(mesh, sk, joints, tmp_path / "rigged.glb")
+    key = {"in": [0] * 3, "out": [0] * 3, "v": [0, 0.76, 0]}  # Bip001 lifted 0.1 m (Unity Y = up)
+    lift = {"name": "Lift", "sample_rate": 30.0, "start_time": 0.0, "stop_time": 1 / 30,
+            "tracks": [{"path": "Bip001", "channel": "position", "keys": [dict(key, t=0.0), dict(key, t=1 / 30)]}]}
+    rep = run_job({"input_model": str(tmp_path / "rigged.glb"), "output_fbx": str(tmp_path / "m.fbx"),
+                   "unity_skeleton": sk, "clips": [lift]})
+    ev = rep["clips"][0]["evaluated_check"]
+    assert ev["armature_world_is_identity"] and ev["max_bone_head_error_m"] < 1e-4
+    assert "Bip001" not in rep["clips"][0]["unmapped_paths"]  # the biped root is a bone now, driven directly
+    arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
+    obj = next(o for o in bpy.data.objects if o.type == "MESH")
+    rest = np.array([list(obj.matrix_world @ v.co) for v in obj.data.vertices])
+    arm.animation_data.action = next(a for a in bpy.data.actions if "Lift" in a.name)
+    bpy.context.scene.frame_set(1)
+    ev_obj = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    moved = np.array([list(ev_obj.matrix_world @ v.co) for v in ev_obj.to_mesh().vertices])
+    assert (moved - rest).mean(axis=0) == pytest.approx([0, 0, 0.1], abs=1e-4)  # up, not sideways

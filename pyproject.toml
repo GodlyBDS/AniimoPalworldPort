@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aniimo-palworld-toolkit"
-version = "0.6.3"
+version = "0.6.4"
 description = "Read-only asset inventory and conversion-pipeline scaffolding for moving legally usable Unity assets into Palworld (UE 5.1) mods."
 readme = "README.md"
 requires-python = ">=3.11"

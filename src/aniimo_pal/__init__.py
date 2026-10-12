@@ -1,4 +1,4 @@
 """AniimoPalworldToolkit: read-only asset inventory and pipeline scaffolding."""
 
-__version__ = "0.6.3"
+__version__ = "0.6.4"
 TOOL_NAME = "aniimo-pal"

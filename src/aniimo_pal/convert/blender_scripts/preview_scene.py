@@ -124,7 +124,14 @@ def run(job: dict) -> dict:
     rest_lo, rest_hi = lo.copy(), hi.copy()
     # Animations move and turn the creature (root motion, attacks): frame the space the skeleton covers over the
     # whole timeline, not only the rest pose, so no variant leaves the picture or overlaps its neighbour.
-    lo, hi = animated_bounds(arm, scene, lo, hi)
+    anim_lo, anim_hi = animated_bounds(arm, scene, lo, hi)
+    # Frame the rest pose plus at most one model size of movement each way: a clip that travels far (root
+    # motion, leaps) must not shrink every model to a few pixels. Movement beyond that leaves the picture;
+    # the report gives the full animated bounds.
+    rest_size = max((rest_hi - rest_lo).x, (rest_hi - rest_lo).y, (rest_hi - rest_lo).z, 0.1)
+    margin = Vector((rest_size, rest_size, rest_size))
+    lo = Vector([max(anim_lo[i], rest_lo[i] - margin[i]) for i in range(3)])
+    hi = Vector([min(anim_hi[i], rest_hi[i] + margin[i]) for i in range(3)])
     size = hi - lo
     spacing = max(size.x, size.y, 0.5) * 1.25
     variants = job.get("variants") or [{"label": "Normal", "texture": None}]
@@ -214,7 +221,8 @@ def run(job: dict) -> dict:
     hot = next((t for t in timeline if any(k in t["action"].lower() for k in ("ult", "attack", "skill"))), None)
     render_frame = (hot or (timeline[0] if timeline else {"start": 1}))["start"] + 5
     report = {"schema": "aniimo-pal/preview-report", "blend": str(out), "variants": placed, "timeline": timeline,
-              "rest_bounds": [list(rest_lo), list(rest_hi)], "animated_bounds": [list(lo), list(hi)],
+              "rest_bounds": [list(rest_lo), list(rest_hi)], "animated_bounds": [list(anim_lo), list(anim_hi)],
+              "framed_bounds": [list(lo), list(hi)],
               "frame_end": scene.frame_end, "render_frame": render_frame, "render": None, "render_error": None,
               "blender_version": bpy.app.version_string}
     if job.get("report"):

@@ -202,12 +202,21 @@ def assemble_creature_glb(parts: list[dict[str, Any]], locals_: dict[str, dict[s
             doc["meshes"].append(dict(m, primitives=prims))
         binds, source, deviation, w = _bind_matrices(part["joints"], part.get("bind_poses"), world, label)
         warnings += w
+        joint_paths = list(part["joints"])
+        if n == 0:
+            # Every ancestor of a joint becomes a joint too (no vertex weights; bind = its rest pose). Otherwise
+            # Blender's glTF importer places the armature OBJECT at the topmost non-joint node (e.g. a 3ds Max
+            # 'Bip001' with its biped rotation), so pose deformation happens in a turned space: a clip that
+            # lifts the body moved the real 10351 sideways. Extra joints are appended, so blend indices stay valid.
+            extra = [p for p in paths if p not in set(joint_paths)]
+            joint_paths += extra
+            binds = list(binds) + [np.linalg.inv(world[p]) for p in extra]
         ibms = [S @ b @ S for b in binds]
         ibm_off = add_bytes(b"".join(struct.pack("<16f", *m.T.flatten()) for m in ibms))  # glTF is column-major
         doc["bufferViews"].append({"buffer": 0, "byteOffset": ibm_off, "byteLength": 64 * len(ibms)})
         doc["accessors"].append({"bufferView": len(doc["bufferViews"]) - 1, "componentType": 5126,
                                  "count": len(ibms), "type": "MAT4"})
-        doc["skins"].append({"name": f"{root_name}_Skin{n}", "joints": [index[j] for j in part["joints"]],
+        doc["skins"].append({"name": f"{root_name}_Skin{n}", "joints": [index[j] for j in joint_paths],
                              "inverseBindMatrices": len(doc["accessors"]) - 1, "skeleton": index[paths[0]]})
         bound = 0
         for node in src.get("nodes", []):

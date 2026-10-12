@@ -350,7 +350,6 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
         containers.append(record)
         if rel in deep:
             for obj in deep[rel].get("objects", []):
-                obj = behaviour_assets.pop(obj["id"], obj)
                 obj["container"] = rel
                 objects.append(obj)
         else:
@@ -369,13 +368,17 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
                                     "container": rel})
         for cls, n in record["class_counts"].items():
             class_counts[cls] += n
-    if behaviour_assets:  # decoded data assets in surveyed containers replace their name-only records
-        pos = {o["id"]: i for i, o in enumerate(objects) if o["id"] in behaviour_assets}
+    if behaviour_assets:
+        # A decoded data asset replaces the record of the same object in the container it was decoded from.
+        # Other copies of that serialized file (e.g. a CacheBundleFiles download) keep their own records; the
+        # object index picks the most completely read copy and reports copies that disagree.
+        where = {(o["id"], o.get("container")): i for i, o in enumerate(objects) if o["id"] in behaviour_assets}
         for oid, obj in behaviour_assets.items():
-            if oid in pos:
-                objects[pos[oid]] = obj
-            else:
+            i = where.get((oid, obj.get("container")))
+            if i is None:
                 objects.append(obj)
+            else:
+                objects[i] = obj
 
     cab_owner_all: dict[str, str] = {}
     duplicate_cabs = set()
@@ -444,6 +447,31 @@ def summary_doc(doc: dict[str, Any]) -> dict[str, Any]:
         {"schema": SCHEMA_ID + "-summary"}
 
 
+def _completeness(rec: dict[str, Any]) -> tuple[int, int, int, int]:
+    info = rec.get("info") or {}
+    return (0 if info.get("surveyed") else 1, 0 if rec.get("error") else 1, len(info), len(rec.get("refs") or []))
+
+
+def _differences(a: dict[str, Any], b: dict[str, Any], limit: int = 12) -> list[str]:
+    """Dotted paths (two levels below info) where two records of one object differ."""
+    out = [k for k in ("class", "name", "refs") if a.get(k) != b.get(k)]
+    ia, ib = a.get("info") or {}, b.get("info") or {}
+    for k in sorted(set(ia) | set(ib)):
+        va, vb = ia.get(k), ib.get(k)
+        if va == vb:
+            continue
+        if isinstance(va, dict) and isinstance(vb, dict):
+            out += [f"info.{k}.{s}" for s in sorted(set(va) | set(vb)) if va.get(s) != vb.get(s)]
+        else:
+            out.append(f"info.{k}")
+    return out[:limit]
+
+
+def _content_key(rec: dict[str, Any]) -> str:
+    return json.dumps([rec.get("class"), rec.get("name"), rec.get("refs"), rec.get("info")], sort_keys=True,
+                      default=str)
+
+
 class ObjectIndex:
     """Lookup helpers over an ``aniimo-pal/objects`` document."""
 
@@ -451,10 +479,33 @@ class ObjectIndex:
         if doc.get("schema") != SCHEMA_ID:
             raise ToolkitError(f"not an {SCHEMA_ID} document")
         self.doc = doc
-        self.by_id: dict[str, dict[str, Any]] = {o["id"]: o for o in doc["objects"]}
+        # The same serialized file (CAB) can sit in several containers, e.g. a StreamingAssets bundle and its
+        # downloaded copy under CacheBundleFiles: one object id, several records. One canonical record per id:
+        # the most completely read one (decoded beats surveyed, then more facts and references); among equally
+        # complete copies the first by container path. Copies that were both decoded but disagree are reported
+        # in ``conflicts`` instead of guessing which is current.
+        copies: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for o in doc["objects"]:
+            copies[o["id"]].append(o)
+        self.by_id: dict[str, dict[str, Any]] = {}
+        self.copies: dict[str, list[dict[str, Any]]] = {}
+        self.conflicts: list[dict[str, Any]] = []
+        for oid, recs in copies.items():
+            if len(recs) == 1:
+                self.by_id[oid] = recs[0]
+                continue
+            recs = sorted(recs, key=lambda r: (tuple(-x for x in _completeness(r)), r.get("container") or ""))
+            self.by_id[oid] = recs[0]
+            self.copies[oid] = recs
+            full = [r for r in recs if _completeness(r) == _completeness(recs[0])]
+            if len({_content_key(r) for r in full}) > 1:
+                self.conflicts.append({"object": oid, "class": recs[0].get("class"), "name": recs[0].get("name"),
+                                       "containers": [r.get("container") for r in full],
+                                       "chosen": recs[0].get("container"),
+                                       "differs_in": _differences(full[0], full[1])})
         self.by_class: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.referrers: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for o in doc["objects"]:
+        for o in self.by_id.values():
             self.by_class[o["class"]].append(o)
             for r in o["refs"]:
                 self.referrers[r["target"]].append((o["id"], r["field"]))

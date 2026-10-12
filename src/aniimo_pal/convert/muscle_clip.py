@@ -440,9 +440,10 @@ def validate_clip(clip: dict[str, Any], rest: dict[str, dict[str, list[float]]] 
 def _pose_vs_rest(clip: dict[str, Any], rest: dict[str, dict[str, list[float]]]) -> dict[str, Any] | None:
     """How the whole animated skeleton is turned and moved against the rest pose (Unity model space).
 
-    Bone positions of the rest pose and of a frame are compared with a best-fit rotation (Kabsch): an angle near
-    90 deg about the up axis means the decoded animation itself turns the creature sideways relative to its rest
-    pose (the preview is then not the cause). Also lists the shallowest animated transforms against rest.
+    Bone positions of the rest pose and of a frame are compared with a best-fit rotation (Kabsch) of the whole
+    point cloud. This is a hint, not a decision: one strongly turned limb can also produce a large angle, and
+    ``shift_m`` is the centroid shift, not the root's translation. Also lists the shallowest animated transforms
+    against rest, which say more about the root.
     """
     import numpy as np
 

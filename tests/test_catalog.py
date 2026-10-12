@@ -621,3 +621,25 @@ def test_inventory_records_bundle_container_paths(tmp_path):
     doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
     (copy,) = doc["asset_index"]["assets/creatures/foxlet/foxlet.prefab"]
     assert copy["object"] == f"cab-foxlet:{ids['normal'].root_go}" and copy["container"] == "foxlet.uab"
+
+
+def test_duplicate_object_records_keep_the_decoded_copy_and_report_conflicts():
+    """Real install: a CAB in a StreamingAssets bundle and again in CacheBundleFiles/.../cdata.uab. The second
+    record was only surveyed and replaced the decoded PlatformData record (no path strings -> no materials)."""
+    from aniimo_pal.inventory import SCHEMA_ID, ObjectIndex
+
+    full = {"id": "cab-a:1", "cab": "cab-a", "path_id": 1, "class": "MonoBehaviour", "name": "X_PlatformData",
+            "refs": [{"field": "m_Script", "target": "cab-s:1"}], "container": "StreamingAssets/a.uab",
+            "info": {"script": 1, "asset_path_strings": [["m_DefaultConfig.m_Lods[0].m_Renderers[0].m_MeshPath.m_Path",
+                                                          "Assets/M.asset"]]}}
+    surveyed = {"id": "cab-a:1", "cab": "cab-a", "path_id": 1, "class": "MonoBehaviour", "name": "X_PlatformData",
+                "refs": [], "info": {"surveyed": True}, "container": "cvs/CacheBundleFiles/f9/cdata.uab"}
+    mat_a = {"id": "cab-m:2", "cab": "cab-m", "path_id": 2, "class": "Material", "name": "MI_X", "refs": [],
+             "container": "StreamingAssets/m.uab", "info": {"floats": {"_A": 1.0}}}
+    mat_b = dict(mat_a, container="cvs/CacheBundleFiles/59/cdata.uab", info={"floats": {"_A": 1.0, "_Wet": 0.5}})
+    for order in ([full, surveyed, mat_a, mat_b], [surveyed, full, mat_b, mat_a]):
+        idx = ObjectIndex({"schema": SCHEMA_ID, "containers": [], "objects": order})
+        assert idx.get("cab-a:1")["container"] == "StreamingAssets/a.uab"
+        assert len(idx.by_class["MonoBehaviour"]) == 1 and len(idx.copies["cab-a:1"]) == 2
+        (conflict,) = idx.conflicts  # two decoded materials that differ: reported, not silently merged
+        assert conflict["object"] == "cab-m:2" and conflict["differs_in"] == ["info.floats._Wet"]

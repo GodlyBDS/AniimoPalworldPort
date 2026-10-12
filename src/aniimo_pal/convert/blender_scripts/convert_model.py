@@ -310,12 +310,49 @@ def transfer_clip(arm_obj, clip: dict, rest: dict, path_to_bone: dict[str, str],
             expected = (a4 @ anim_model[path])[:3, 3]
             head = (target @ Vector((0, 0, 0, 1)))
             max_err = max(max_err, float(np.linalg.norm(np.array(head[:3]) - expected)))
+    evaluated = _evaluated_check(arm_obj, clip, rest, tracks_by_path, path_to_bone, order, a4, start, rate, fps,
+                                 n_frames)
     # keep each clip as its own action for FBX export (bake_anim_use_all_actions)
     action.use_fake_user = True
     arm_obj.animation_data.action = None
     return {"name": action.name, "frames": n_frames + 1, "fps": fps, "sample_rate": rate,
             "bones_driven": len(order), "unknown_paths": unknown_paths, "unmapped_paths": unmapped,
-            "events": clip.get("events", []), "max_head_error_m": max_err}
+            "events": clip.get("events", []),
+            # Internal consistency only: computed from the same target matrices that were keyed.
+            "max_head_error_m": max_err,
+            # Independent: Blender evaluates the keyed action; bone heads in WORLD space vs the Unity pose mapped
+            # by the fitted basis and the armature object's world matrix.
+            "evaluated_check": evaluated}
+
+
+def _evaluated_check(arm_obj, clip, rest, tracks_by_path, path_to_bone, order, a4, start, rate, fps, n_frames,
+                     samples: int = 8) -> dict:
+    scene = bpy.context.scene
+    frames = sorted({round(i * n_frames / max(1, samples - 1)) for i in range(samples)}) if n_frames else [0]
+    arm_world = np.array(arm_obj.matrix_world)
+    worst, worst_bone = 0.0, None
+    for f in frames:
+        time = start + f / rate
+        overrides: dict[str, dict] = {}
+        for path, trs in tracks_by_path.items():
+            o = overrides.setdefault(path, {})
+            for tr in trs:
+                v = evaluate_track(tr, time)
+                o["rotation" if tr["channel"] == "euler" else tr["channel"]] = (
+                    unity_euler_to_quat(v, tr.get("rotation_order")) if tr["channel"] == "euler" else v)
+        anim_model = unity_model_matrices(rest, overrides)
+        scene.frame_set(int(round(1 + (time - start) * fps)))
+        bpy.context.view_layer.update()
+        for path in order:
+            pb = arm_obj.pose.bones[path_to_bone[path]]
+            got = np.array(arm_obj.matrix_world @ pb.head)
+            expected = (arm_world @ (a4 @ anim_model[path]))[:3, 3]
+            err = float(np.linalg.norm(got - expected))
+            if err > worst:
+                worst, worst_bone = err, path
+    return {"frames_checked": len(frames), "max_bone_head_error_m": worst, "worst_bone": worst_bone,
+            "armature_world_is_identity": bool(np.allclose(arm_world, np.eye(4), atol=1e-6)),
+            "space": "Blender world (armature object matrix applied)"}
 
 
 def run(job: dict) -> dict:

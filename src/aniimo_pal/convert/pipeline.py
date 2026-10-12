@@ -241,7 +241,8 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
                                                            "bounds", "warnings")}
             checks = {c.get("name"): (c.get("decoder") or {}).get("validation") for c in clips}
             model["clips"] = [dict({k: c.get(k) for k in ("name", "frames", "bones_driven", "unknown_paths",
-                                                            "unmapped_paths", "max_head_error_m")},
+                                                            "unmapped_paths", "max_head_error_m",
+                                                            "evaluated_check")},
                                    # Decoded-data checks (Unity space, before Blender): see muscle_clip.validate_clip.
                                    validation=checks.get(c.get("name"))) for c in report["clips"]]
             for rec in outputs:

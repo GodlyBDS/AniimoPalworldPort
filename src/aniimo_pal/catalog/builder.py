@@ -581,7 +581,11 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
             "placeholder_meshes": placeholder_stats,
             "name_groups": name_groups,
             "id_coverage": _id_coverage(objects_doc, rules, model_bundles, species_list, all_candidates, no_mesh),
-            "diagnostics": _diagnostics(idx, h, roots, rules),
+            "diagnostics": dict(_diagnostics(idx, h, roots, rules),
+                                # One object id, several decoded records that differ (e.g. a StreamingAssets bundle
+                                # and a newer CacheBundleFiles download share a CAB name). Not resolved by guessing.
+                                duplicate_objects=len(idx.copies), conflicting_copies=len(idx.conflicts),
+                                conflict_examples=idx.conflicts[:20]),
         },
         "species": species_list,
     }
