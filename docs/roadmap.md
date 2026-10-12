@@ -14,7 +14,7 @@
 | 6 | **New-Pal mode**: data rows (PalSchema), biome spawners for regional forms, form/appearance identity persistence (capture, storage, save/load, breeding inheritance), in-game rarity matching the reference roller | Planned, needs research |
 | 7 | **Combat translation + in-game testing**: combat discovery (events, controller states, skill data), reusable combat templates, **Ultimate → Partner Skill** framework, AI usage rules, combat validation | Planned, starts with a research spike (architecture §9) |
 | 8 | **Stats, element & work-suitability translation**: data-table discovery on real data, verified system definitions, normalisation + balancing presets (Faithful / Vanilla Balanced / Custom), element and work mapping tables, variant-specific verified differences | Planned; schema, vocabularies and validation already in place (architecture §10) |
-| 9 | Studio GUI (guided workflow, 3D preview, association review, variant, combat, stats and work panels, validation report) | Planned |
+| 9 | Studio GUI (guided workflow, 3D preview, association review, variant, combat, stats and work panels, validation report) | **Started early**: portable Studio with first-run installer, game-folder selection, scan/catalog, creature workflow, asset review, variant + animation 3D preview (Blender scene + still), Palworld mods page ([studio.md](studio.md)). Combat/stats/regional panels still to come |
 | 10 | Mod packs, compatibility checks, distributable build | Planned |
 
 Regional forms are added step by step: catalog detection when real data is
@@ -48,6 +48,7 @@ animation events) without migrations.
 | `.anim` parsing of real AssetRipper output; Hermite evaluation | `tests/test_convert.py` (fixture produced by real AssetRipper from a synthetic compiled clip) |
 | Skin assembly: joint order, glTF conversion, inverse bind matrices, bind-pose source, vertices on bones | `tests/test_skin_assembly.py` |
 | Clip retargeting through FBX export + re-import matches Unity-space math (≤ 0.1 mm) | `tests/test_convert.py` (bpy 5.2.2) |
+| Studio: first-run install into a fresh folder (Python env, portable Blender 5.2.2, AssetRipper from zip), full creature workflow incl. 3D preview with real AssetRipper + real Blender, containment check (nothing written to home/temp/caches outside the folder), GUI under Xvfb | Linux, manual run + `tests/test_studio.py`; Windows/macOS untested |
 | Full chain scan → inventory → catalog → creature → extract → AssetRipper (primary + project) → convert | `tests/test_convert_pipeline.py` with `ASSETRIPPER_PATH` (real build) |
 | Stats/elements/work schema: vocabulary checks against system definitions, unmapped elements handled explicitly, work-level ranges, variant inheritance and overrides, rarity/combat kept out | `tests/test_profile.py` |
 | TextAsset description + `objects` search (data-table discovery) | `tests/test_inventory.py` |

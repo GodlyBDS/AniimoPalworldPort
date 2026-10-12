@@ -385,6 +385,29 @@ def cmd_creature_convert(args: argparse.Namespace, config: Config) -> int:
     return EXIT_OK if s["errors"] == 0 else EXIT_CHECK_FAILED
 
 
+def cmd_creature_preview(args: argparse.Namespace, config: Config) -> int:
+    import subprocess
+
+    from aniimo_pal.convert.preview import build_preview
+    from aniimo_pal.creature.model import load_creature
+
+    path = Path(args.file)
+    blender = args.blender or config.tools.blender or None
+    report = build_preview(load_creature(path), path.parent, blender=blender)
+    print(f"preview scene: {report['blend']}")
+    print("variants: " + ", ".join(v["label"] for v in report["variants"]))
+    print("animations: " + ", ".join(f"{t['action']} (frames {t['start']}-{t['end']})" for t in report["timeline"]))
+    if report.get("render"):
+        print(f"preview image: {report['render']}")
+    elif report.get("render_error"):
+        print(f"(no preview image: {report['render_error']})")
+    if args.open:
+        if not blender:
+            raise ToolkitError("--open needs a Blender executable (--blender or config [tools].blender)")
+        subprocess.Popen([blender, report["blend"]])
+    return EXIT_OK
+
+
 def cmd_inventory(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.inventory import build_inventory
     from aniimo_pal.manifest.io import check_output_location, read_manifest, write_json_atomic
@@ -674,6 +697,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bone-map", metavar="JSON", help="rename bones: {\"old\": \"new\"}")
     p.add_argument("--include-proposed", action="store_true")
     p.set_defaults(func=cmd_creature_convert)
+    p = csub.add_parser("preview", help="build a Blender scene with every variant and every animation")
+    p.add_argument("file")
+    p.add_argument("--blender", help="Blender executable (default: config [tools].blender, else the bpy module)")
+    p.add_argument("--open", action="store_true", help="open the scene in Blender afterwards")
+    p.set_defaults(func=cmd_creature_preview)
     p = csub.add_parser("validate", help="validate a creature.json")
     p.add_argument("file")
     p.add_argument("--source-system", metavar="TOML", help="Aniimo system definition (default: bundled, unverified)")

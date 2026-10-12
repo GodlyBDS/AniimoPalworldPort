@@ -32,17 +32,18 @@ def bpy_available() -> bool:
     return importlib.util.find_spec("bpy") is not None
 
 
-def run_job(job: dict[str, Any], *, blender: str | None = None, timeout: float = 1800) -> dict[str, Any]:
-    """Run a conversion job; returns the report dict."""
+def run_job(job: dict[str, Any], *, blender: str | None = None, timeout: float = 1800,
+            script: str = "convert_model.py") -> dict[str, Any]:
+    """Run a Blender job script (default: the conversion job); returns the report dict."""
     if blender:
-        return _run_external(job, blender, timeout)
+        return _run_external(job, blender, timeout, script)
     if bpy_available():
-        return _run_in_process(job)
+        return _run_in_process(job, script)
     raise BlenderJobError("Blender not available: pass --blender PATH (Blender 3.6+) or install the bpy module")
 
 
-def _run_in_process(job: dict[str, Any]) -> dict[str, Any]:
-    spec = importlib.util.spec_from_file_location("aniimo_pal_blender_convert_model", script_path())
+def _run_in_process(job: dict[str, Any], script: str = "convert_model.py") -> dict[str, Any]:
+    spec = importlib.util.spec_from_file_location(f"aniimo_pal_blender_{Path(script).stem}", script_path(script))
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -52,13 +53,13 @@ def _run_in_process(job: dict[str, Any]) -> dict[str, Any]:
         raise BlenderJobError(f"Blender job failed: {type(exc).__name__}: {exc}") from exc
 
 
-def _run_external(job: dict[str, Any], blender: str, timeout: float) -> dict[str, Any]:
+def _run_external(job: dict[str, Any], blender: str, timeout: float, script: str = "convert_model.py") -> dict[str, Any]:
     job = dict(job)
     with tempfile.TemporaryDirectory(prefix="aniimo-pal-job-") as tmp:
         job.setdefault("report", str(Path(tmp) / "report.json"))
         job_file = Path(tmp) / "job.json"
         job_file.write_text(json.dumps(job), encoding="utf-8")
-        cmd = [blender, "-b", "--factory-startup", "--python", str(script_path()), "--", str(job_file)]
+        cmd = [blender, "-b", "--factory-startup", "--python", str(script_path(script)), "--", str(job_file)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:

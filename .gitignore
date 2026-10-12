@@ -59,3 +59,6 @@ mod_project/**/Saved/
 mod_project/**/Intermediate/
 mod_project/**/DerivedDataCache/
 mod_project/**/Binaries/
+
+# --- Studio (portable app data: environment, tools, workspace, logs) ---
+/studio-data/

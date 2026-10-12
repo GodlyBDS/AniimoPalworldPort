@@ -25,7 +25,21 @@ Palworld mod. See [docs/architecture.md](docs/architecture.md).
 >   combat translation and stat/element/work translation. Their data shapes
 >   are already defined and validated in `creature.json`. See [docs/roadmap.md](docs/roadmap.md).
 
-## Pipeline (what works today)
+## Quick start: the Studio (guided GUI)
+
+1. Put this toolkit in a new, empty folder (for example `Desktop\AniimoStudio`).
+2. Double-click **`Start-Studio.bat`** (Windows) or run **`./start-studio.sh`** (Linux/macOS).
+3. First run: click **Install everything missing**. Python environment,
+   AssetRipper and Blender are installed **inside that folder only**.
+4. Select your Aniimo folder, scan, pick a creature, and click **Run all steps**.
+   You get extracted assets, a rigged FBX for Unreal, and a **3D preview** of every
+   variant with all animations (openable in Blender).
+
+Details, folder layout and what is/isn't tested: [docs/studio.md](docs/studio.md).
+The Palworld mods you will need for importing are listed in the Studio's
+*Palworld mods* tab.
+
+## Pipeline (what works today, command line)
 
 ```bash
 pip install -e ".[unitypy]"
@@ -68,6 +82,7 @@ aniimo-pal creature convert ws/creatures/aniimo_foxlet/creature.json --blender "
 | `objects` | Search the object index, e.g. for stat, element or job data tables |
 | `systems` | Show the (versioned, currently unverified) Aniimo/Palworld vocabularies used for validation |
 | `creature convert` | Skin assembly + Blender job: rigged FBX with retargeted animation clips and a report |
+| `creature preview` | Blender scene with every variant side by side and every animation on the timeline (+ still image) |
 | `doctor`, `config` | Tool discovery; effective configuration |
 
 Global options: `--config FILE` ([config/default.toml](config/default.toml)),

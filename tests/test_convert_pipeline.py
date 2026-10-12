@@ -4,6 +4,7 @@ import json
 import math
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -97,6 +98,16 @@ def test_convert_with_simulated_assetripper_outputs(skinned_game, tmp_path):
     assert m["clips"][0]["bones_driven"] == 5 and m["clips"][0]["max_head_error_m"] < 1e-6
     assert c["status"] == "converted" and mesh["converted"] == m["fbx"]
     assert json.loads((cdir / "convert/report.json").read_text())["creature"] == "aniimo_foxlet"
+
+    # 3D preview: every variant side by side, every animation on the timeline.
+    from aniimo_pal.convert.preview import build_preview
+
+    preview = build_preview(c, cdir)
+    assert [v["label"] for v in preview["variants"]] == ["Normal", "Shiny 1"]
+    assert all(v["texture"] and Path(v["texture"]).is_file() for v in preview["variants"])
+    assert [t["action"] for t in preview["timeline"]] == ["Foxlet_Wag"]
+    assert (cdir / "preview" / "preview.blend").is_file()
+    assert preview["render"] is None and "Blender executable" in preview["render_error"]  # bpy module: no still
 
 
 def ub_fixture():
