@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aniimo-palworld-toolkit"
+version = "0.1.0"
+description = "Read-only asset inventory and conversion-pipeline scaffolding for moving legally usable Unity assets into Palworld (UE 5.1) mods."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+# Optional third-party parsers/validators. The core scanner has no runtime dependencies.
+unitypy = ["UnityPy>=1.20"]
+validate = ["jsonschema>=4"]
+dev = ["pytest>=7", "jsonschema>=4"]
+
+[project.scripts]
+aniimo-pal = "aniimo_pal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+aniimo_pal = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 140
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]

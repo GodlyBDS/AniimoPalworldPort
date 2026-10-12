@@ -1,0 +1,14 @@
+# Example local overrides. Copy to config/local.toml (git-ignored).
+[scan]
+hash_algorithms = ["sha256", "md5"]
+workers = 8
+exclude = ["*/Logs/*", "*.log"]
+
+[logging]
+level = "DEBUG"
+file = "workspace/logs/aniimo-pal.jsonl"
+
+[tools]
+assetripper = "C:/Tools/AssetRipper/AssetRipper.GUI.Free.exe"
+blender = "C:/Program Files/Blender Foundation/Blender 3.6/blender.exe"
+unreal_editor = "C:/Program Files/Epic Games/UE_5.1/Engine/Binaries/Win64/UnrealEditor-Cmd.exe"

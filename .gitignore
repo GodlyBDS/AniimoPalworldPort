@@ -1,0 +1,61 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# --- Local working areas (never commit game data or derived output) ---
+/input/
+/workspace/
+/extracted/
+/output/
+/manifests/
+/config/local.toml
+*.log
+*.jsonl
+
+# --- Unity game data / extracted content ---
+*.assets
+*.assets.resS
+*.resS
+*.resource
+*.bundle
+*.unity3d
+*.ab
+*.bytes
+*.unitypackage
+global-metadata.dat
+GameAssembly.dll
+*_Data/
+
+# --- 3D / texture intermediates produced from game data ---
+*.fbx
+*.FBX
+*.glb
+*.gltf
+*.blend
+*.blend1
+*.dds
+*.ktx
+*.ktx2
+*.astc
+*.tga
+*.exr
+
+# --- Unreal / Palworld outputs ---
+*.pak
+*.utoc
+*.ucas
+*.sig
+*.uasset
+*.uexp
+*.ubulk
+*.umap
+mod_project/**/Saved/
+mod_project/**/Intermediate/
+mod_project/**/DerivedDataCache/
+mod_project/**/Binaries/

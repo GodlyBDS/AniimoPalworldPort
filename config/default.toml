@@ -1,0 +1,42 @@
+# AniimoPalworldToolkit default configuration.
+# Every key here mirrors a built-in default in src/aniimo_pal/config.py (a unit test
+# keeps them in sync). Copy to config/local.toml (git-ignored) and pass it with
+# `aniimo-pal --config config/local.toml ...` to override values.
+
+[scan]
+# Hash algorithms from Python's hashlib (guaranteed set). sha256 is recommended.
+hash_algorithms = ["sha256"]
+# Symlinks are recorded as skipped, never followed, unless this is true.
+follow_symlinks = false
+# Skip files/dirs whose name starts with "." (recorded as skipped).
+include_hidden = false
+# fnmatch-style globs matched against the POSIX path relative to the scan root.
+# Note: "*" also matches "/" in fnmatch.
+exclude = []
+# Parallel file workers (hashing is I/O bound).
+workers = 4
+# Bytes read from the start of each file for signature detection and entropy.
+probe_bytes = 65536
+# Shannon entropy (bits/byte) above which an unrecognised file is flagged
+# "unknown_high_entropy" (compressed, encrypted or packed data).
+high_entropy_threshold = 7.5
+# Record file modification times (makes manifests less reproducible).
+record_mtime = true
+
+[manifest]
+# Store the absolute scan root in the manifest. Off by default so manifests
+# do not leak local usernames/paths when shared.
+store_absolute_root = false
+indent = 2
+
+[logging]
+level = "INFO"
+# Optional JSON-lines log file path. Empty = console only.
+file = ""
+
+[tools]
+# Paths to external tools. Empty = search PATH. Only used by `aniimo-pal doctor`
+# in milestone 1; adapters that execute these tools arrive in milestone 2.
+assetripper = ""
+blender = ""
+unreal_editor = ""

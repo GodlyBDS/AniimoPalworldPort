@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GodlyBDS/AniimoPalworldPort/schemas/manifest.schema.json",
+  "title": "AniimoPalworldToolkit asset manifest",
+  "type": "object",
+  "required": ["schema", "schema_version", "generator", "created_utc", "source", "settings", "summary", "files", "skipped"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "aniimo-pal/manifest"},
+    "schema_version": {"type": "string", "pattern": "^1\\.\\d+\\.\\d+$"},
+    "generator": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {"name": {"type": "string"}, "version": {"type": "string"}}
+    },
+    "created_utc": {"type": "string"},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "source": {
+      "type": "object",
+      "required": ["root_label", "root_path"],
+      "properties": {
+        "root_label": {"type": "string"},
+        "root_path": {"type": ["string", "null"]},
+        "host_platform": {"type": "string"}
+      }
+    },
+    "settings": {
+      "type": "object",
+      "required": ["hash_algorithms"],
+      "properties": {
+        "hash_algorithms": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["file_count", "total_bytes", "skipped_count", "error_count", "warning_count",
+                   "supported_count", "encrypted_count", "by_kind", "by_category"],
+      "properties": {
+        "file_count": {"type": "integer", "minimum": 0},
+        "total_bytes": {"type": "integer", "minimum": 0},
+        "skipped_count": {"type": "integer", "minimum": 0},
+        "error_count": {"type": "integer", "minimum": 0},
+        "warning_count": {"type": "integer", "minimum": 0},
+        "supported_count": {"type": "integer", "minimum": 0},
+        "encrypted_count": {"type": "integer", "minimum": 0},
+        "by_kind": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "by_category": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "bytes_by_category": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "unity_versions": {"type": "object", "additionalProperties": {"type": "integer"}}
+      }
+    },
+    "files": {"type": "array", "items": {"$ref": "#/$defs/file"}},
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "reason"],
+        "additionalProperties": false,
+        "properties": {"path": {"type": "string"}, "reason": {"type": "string"}}
+      }
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "required": ["path", "size", "hashes", "kind", "category", "supported", "confidence", "details", "warnings", "error"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "not": {"pattern": "^/|\\\\"}},
+        "size": {"type": ["integer", "null"], "minimum": 0},
+        "mtime_utc": {"type": "string"},
+        "hashes": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]+$"}
+        },
+        "kind": {"type": ["string", "null"]},
+        "category": {"type": ["string", "null"]},
+        "supported": {"type": "boolean"},
+        "route": {"type": ["string", "null"]},
+        "confidence": {"enum": ["high", "medium", "low", null]},
+        "entropy": {"type": "number", "minimum": 0, "maximum": 8},
+        "details": {"type": "object"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "error": {"type": ["string", "null"]},
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "path"],
+            "properties": {
+              "type": {"enum": ["meta_for", "resource_of"]},
+              "path": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  }
+}
