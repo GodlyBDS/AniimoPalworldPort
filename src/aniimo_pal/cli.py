@@ -523,6 +523,12 @@ def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
     print(f"renderers {d['renderers']}: with mesh {d['renderers_with_mesh']}, with GameObject "
           f"{d['renderers_with_gameobject']}, in a Transform hierarchy {d['renderers_in_hierarchy']}; "
           f"root GameObjects {d['root_gameobjects']}")
+    ph = s.get("placeholder_meshes") or {}
+    if ph.get("renderers_resolved") or ph.get("renderers_unresolved"):
+        print(f"placeholder meshes (real mesh attached at runtime): {ph['renderers_resolved']} renderers resolved by "
+              f"name, {ph['renderers_unresolved']} unresolved")
+        for e in ph.get("unresolved_examples", [])[:5]:
+            print(f"  unresolved: {e}")
     for m in d["missing_mesh_files"]:
         print(f"  meshes not in the object list: {m['count']} in {m['cab']} ({m['container'] or 'container not read'})")
     print(f"catalog:    {args.output}")
