@@ -87,7 +87,7 @@ def extract_creature(creature: dict[str, Any], creature_dir: str | Path, game_ro
     skeleton = creature.get("skeleton") or {}
     # Bound path hash -> transform path, for decoding compiled animation clips.
     clip_paths = {"paths": [b_["path"] for b_ in skeleton.get("bones") or []], "root": skeleton.get("root_name"),
-                  "tos": []}
+                  "tos": [], "rest": _skeleton_rest(skeleton)}
 
     def unique(rel: str) -> str:
         if rel not in used_names:
@@ -249,7 +249,10 @@ def _export_one(reader, asset: dict[str, Any], out_root: Path, unique, texture_f
 
         cp = clip_paths or {}
         try:
-            clip = decode_clip(d, hash_lookup(cp.get("paths") or [], cp.get("root"), cp.get("tos")))
+            lookup = hash_lookup(cp.get("paths") or [], cp.get("root"), cp.get("tos"))
+            rest = {lookup[h]: pose for h, pose in (cp.get("rest_by_hash") or {}).items() if h in lookup} \
+                or cp.get("rest")
+            clip = decode_clip(d, lookup, rest)
             clip_rel = rel[:-5] + ".clip.json"
             write_json_atomic(_json_safe(clip), out_root / clip_rel)
             doc.update(curves_exported=True, clip_file=clip_rel, decoder=clip["decoder"], warnings=clip["warnings"])
@@ -261,14 +264,27 @@ def _export_one(reader, asset: dict[str, Any], out_root: Path, unique, texture_f
         return rel
     if role == "skeleton" and reader.type.name == "Avatar":
         d = reader.parse_as_dict(check_read=False)
-        if clip_paths is not None:  # verified hash -> path table for clips exported after this
-            clip_paths["tos"] = [(int(h), str(p)) for h, p in d.get("m_TOS") or [] if p]
+        if clip_paths is not None:  # verified hash -> path table and rest pose for clips exported after this
+            from aniimo_pal.convert.muscle_clip import avatar_tables
+
+            tables = avatar_tables(d)
+            clip_paths["tos"] = tables["tos"]
+            clip_paths["rest_by_hash"] = tables["rest_by_hash"]
         doc = {"name": d.get("m_Name"), "bone_paths": sorted({p for _h, p in d.get("m_TOS") or [] if p}),
                "provenance": "verified"}
         rel = unique(f"skeleton/{_safe(d.get('m_Name'), fallback)}.json")
         write_json_atomic(doc, out_root / rel)
         return rel
     return None
+
+
+def _skeleton_rest(skeleton: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        from aniimo_pal.convert.skin_assembly import skeleton_locals
+
+        return skeleton_locals(skeleton) or None
+    except Exception:
+        return None
 
 
 def _safe_report(fn, d):

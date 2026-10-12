@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from aniimo_pal.adapters.unitypy_adapter import UnityPyAdapter, cab_key, iter_pptrs, object_id
+from aniimo_pal.adapters.unitypy_adapter import UnityPyAdapter, cab_key, iter_asset_path_strings, iter_pptrs, object_id
 from aniimo_pal.errors import ToolkitError
 
 RENDERERS = ("SkinnedMeshRenderer", "MeshRenderer")
@@ -38,6 +38,7 @@ class _Resolver:
         self.envs: list[Any] = []
         self.cab_container: dict[str, str] = {}
         self.object_container: dict[str, str] = {}
+        self.asset_index: dict[str, list[dict[str, Any]]] | None = (objects_doc or {}).get("asset_index")
         if objects_doc:
             for c in objects_doc.get("containers", []):
                 for sf in c.get("serialized_files", []):
@@ -159,6 +160,9 @@ def _follow(res: _Resolver, oid: str, depth: int, seen: set[str] | None = None) 
         return {"error": d.get("_error", "not readable")}
     out: dict[str, Any] = {"name": d.get("m_Name"), "script": _script_class(res, reader, d),
                            "fields": sorted(k for k in d if not k.startswith("m_GameObject"))[:60], "references": []}
+    strings = list(iter_asset_path_strings(d))
+    if strings:  # assets named by path (e.g. PlatformData m_MeshPath.m_Path / m_MaterialList[k].m_Path)
+        out["asset_path_strings"] = [_resolve_path_string(res, field, value) for field, value in strings[:200]]
     for field, file_id, path_id in iter_pptrs(d):
         if field in ("m_GameObject", "m_Script"):
             continue
@@ -179,11 +183,56 @@ def _follow(res: _Resolver, oid: str, depth: int, seen: set[str] | None = None) 
     return out
 
 
+def _resolve_path_string(res: _Resolver, field: str, value: str) -> dict[str, Any]:
+    """One path string -> the object the bundles list under exactly that path (expanded like references)."""
+    out: dict[str, Any] = {"field": field, "path": value}
+    if res.asset_index is None:
+        out["status"] = "objects.json has no asset path index: run the inventory with toolkit 0.6.2 or later"
+        return out
+    copies = res.asset_index.get(value.replace("\\", "/").lower())
+    if not copies:
+        out["status"] = "path not listed by any scanned bundle"
+        return out
+    out["copies"] = [{"container": c["container"], "object": c["object"], "meshes": c.get("meshes")} for c in copies]
+    oid = copies[-1]["object"] if len(copies) == 1 else max(
+        copies, key=lambda c: (c["container"].rsplit("/", 1)[-1].startswith("xpt"), c["container"]))["object"]
+    cab = oid.rsplit(":", 1)[0]
+    if oid not in res.readers and cab in res.cab_container:
+        try:
+            res.load(res.cab_container[cab])
+        except Exception as exc:
+            out["status"] = f"container not readable: {exc}"
+            return out
+    out.update(object=oid, status="resolved" if oid in res.readers else "listed, but object not found",
+               **res.summary(oid))
+    if out.get("class") == "Material":
+        out["material"] = _material(res, oid)
+    elif out.get("class") == "Mesh":
+        md = res.read(oid) or {}
+        out["vertex_count"] = (md.get("m_VertexData") or {}).get("m_VertexCount")
+        out["bones"] = len(md.get("m_BindPose") or [])
+    meshes = copies[0].get("meshes") or []
+    if out.get("class") != "Mesh" and meshes:
+        out["model_meshes"] = []
+        for mid in meshes[:8]:
+            if mid not in res.readers and mid.rsplit(":", 1)[0] in res.cab_container:
+                try:
+                    res.load(res.cab_container[mid.rsplit(":", 1)[0]])
+                except Exception:
+                    pass
+            out["model_meshes"].append({"object": mid, **res.summary(mid)})
+    return out
+
+
 def _reachable_classes(refs: list[dict[str, Any]]) -> set[str]:
     out = set()
     for r in refs:
         out.add(r.get("class") or "?")
-        out |= _reachable_classes((r.get("follow") or {}).get("references") or [])
+        follow = r.get("follow") or {}
+        out |= _reachable_classes(follow.get("references") or [])
+        out |= {p.get("class") for p in follow.get("asset_path_strings") or [] if p.get("class")}
+        if any(p.get("model_meshes") for p in follow.get("asset_path_strings") or []):
+            out.add("Mesh")
     return out
 
 
@@ -305,8 +354,16 @@ def probe_prefab(root: str | Path, *, name: str, container: str | None = None, o
 
 
 def probe_clip(root: str | Path, *, name: str, container: str, objects_doc: dict[str, Any] | None = None,
-               skeleton_paths: list[str] | None = None, raw: bool = False) -> dict[str, Any]:
-    from aniimo_pal.convert.muscle_clip import ClipNotDecodable, decode_clip, describe, hash_lookup, structure_report
+               skeleton_paths: list[str] | None = None, raw: bool = False,
+               skeleton_rest: dict[str, dict[str, list[float]]] | None = None) -> dict[str, Any]:
+    from aniimo_pal.convert.muscle_clip import (
+        ClipNotDecodable,
+        avatar_tables,
+        decode_clip,
+        describe,
+        hash_lookup,
+        structure_report,
+    )
 
     res = _Resolver(Path(root), objects_doc)
     res.load(container)
@@ -331,11 +388,27 @@ def probe_clip(root: str | Path, *, name: str, container: str, objects_doc: dict
            "structure": structure_report(d),
            "curve_sets": {k: describe(v) for k, v in data.items()},
            "binding_example": describe(((d.get("m_ClipBindingConstant") or {}).get("genericBindings") or [None])[:1])}
-    hashes = hash_lookup(skeleton_paths or [])
+    # Bone names and rest pose: the Avatar(s) in the clip's own bundle (verified), else the creature's skeleton.
+    tos, rest_by_hash = [], {}
+    for _aid, ar in res.readers.items():
+        if ar.type.name == "Avatar" and res.object_container.get(_aid) == container:
+            try:
+                tables = avatar_tables(ar.parse_as_dict(check_read=False))
+            except Exception:
+                continue
+            tos += tables["tos"]
+            rest_by_hash.update(tables["rest_by_hash"])
+    hashes = hash_lookup(skeleton_paths or [], tos=tos)
+    rest = {hashes[h]: pose for h, pose in rest_by_hash.items() if h in hashes} or (skeleton_rest or None)
+    out["bone_names_from"] = ("Avatar TOS in the clip's bundle" if tos else
+                              "creature skeleton paths" if skeleton_paths else "none (pass --creature)")
+    out["rest_pose_from"] = ("Avatar skeleton pose" if rest_by_hash else
+                             "creature skeleton" if skeleton_rest else "none")
     try:
-        clip = decode_clip(d, hashes)
+        clip = decode_clip(d, hashes, rest)
         out["decoder"] = {"status": "decoded", "tracks": len(clip["tracks"]), "frames": clip["decoder"]["sampled_frames"],
                           "warnings": clip["warnings"], "details": clip["decoder"],
+                          "validation": clip["decoder"].get("validation"),
                           "quantized_search": out["structure"].get("quantized_search")}
     except ClipNotDecodable as exc:
         out["decoder"] = {"status": "not decodable", "reason": str(exc),

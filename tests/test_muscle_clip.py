@@ -151,3 +151,29 @@ def test_quantized_clip_refused_when_no_reading_fits():
     qc["m_Data"] = [b ^ 0x5A for b in qc["m_Data"]]  # scrambled bytes: nothing yields unit quaternions
     with pytest.raises(ClipNotDecodable, match="unit quaternion|layout not understood"):
         decode_clip(d, {})
+
+
+def test_validation_reports_bone_names_continuity_and_rest_pose():
+    from aniimo_pal.convert.muscle_clip import avatar_tables, validate_clip
+
+    d, rows = _quantized_clip()
+    paths = ["Root", "Root/Hips", "Root/Hips/Tail"]
+    rest = {p: {"position": [0.1, 0.5, 0.0] if p == "Root" else [0, 0.2, 0], "rotation": [r[0] for r in rows[4 * i:4 * i + 4]],
+                "scale": [1, 1, 1]} for i, p in enumerate(paths)}
+    clip = decode_clip(d, hash_lookup(paths), rest)
+    val = clip["decoder"]["validation"]
+    assert val["tracks_on_named_bones"] == val["tracks"] == 4 and val["rotation_steps_over_30_deg"] == 0
+    assert val["rotations_within_90_deg_of_rest_at_frame_0"] == "3/3"
+    assert val["most_moving_bones"][0]["max_rotation_deg"] == pytest.approx(50.0, abs=0.5)
+
+    # A wrong curve mapping shows up as jumps and unnamed bones.
+    jumpy = {"tracks": [{"path": "hash:1", "channel": "rotation",
+                         "keys": [{"v": _quat([1, 0, 0], a)} for a in (0, 90, 0, 90)]}]}
+    bad = validate_clip(jumpy)
+    assert bad["tracks_on_named_bones"] == 0 and bad["rotation_steps_over_30_deg"] == 3
+
+    av = avatar_tables({"m_TOS": [(crc("Root"), "Root")], "m_Avatar": {
+        "m_AvatarSkeleton": {"m_ID": [crc("Root")]},
+        "m_AvatarSkeletonPose": {"m_X": [{"t": {"x": 0, "y": 1, "z": 0}, "q": {"x": 0, "y": 0, "z": 0, "w": 1},
+                                          "s": {"x": 1, "y": 1, "z": 1}}]}}})
+    assert av["tos"] == [(crc("Root"), "Root")] and av["rest_by_hash"][crc("Root")]["position"] == [0, 1, 0]

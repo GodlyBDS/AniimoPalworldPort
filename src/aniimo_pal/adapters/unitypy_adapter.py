@@ -122,6 +122,23 @@ def iter_pptrs(value: Any, path: str = "") -> Iterator[tuple[str, int, int]]:
             yield from iter_pptrs(sub, f"{path}[{i}]")
 
 
+def iter_asset_path_strings(value: Any, path: str = "") -> Iterator[list[str]]:
+    """[field path, string] for strings that name an asset file (``.../name.ext``), in field order."""
+    if isinstance(value, str):
+        v = value.strip()
+        named_path = "path" in path.rsplit(".", 1)[-1].lower()  # e.g. m_MeshPath.m_Path
+        if v and len(v) < 400 and ("/" in v and ("." in v.rsplit("/", 1)[-1] or named_path)):
+            yield [path, v]
+    elif isinstance(value, dict):
+        for key, sub in value.items():
+            yield from iter_asset_path_strings(sub, f"{path}.{key}" if path else str(key))
+    elif isinstance(value, (list, tuple)):
+        if value and not isinstance(value[0], (dict, list, tuple, str)):
+            return
+        for i, sub in enumerate(value):
+            yield from iter_asset_path_strings(sub, f"{path}[{i}]")
+
+
 def _class_info(cls: str, d: dict[str, Any]) -> dict[str, Any]:
     """Small, JSON-friendly facts per class (never large payloads)."""
     info: dict[str, Any] = {}
@@ -165,6 +182,40 @@ def _class_info(cls: str, d: dict[str, Any]) -> dict[str, Any]:
     elif cls == "AssetBundle":
         info.update(bundle_name=d.get("m_AssetBundleName"), dependencies=list(d.get("m_Dependencies") or []))
     return info
+
+
+def _container_entries(sf, d: dict[str, Any], externals: list[str]) -> list[list[Any]]:
+    """AssetBundle ``m_Container``: [asset path, main object id, [meshes among the asset's preload objects]].
+
+    Game data often names assets by these paths (strings) instead of object references. The preload range lists
+    the objects an asset consists of; for a model file that is where its meshes are.
+    """
+    def oid(pptr: dict[str, Any]) -> str | None:
+        file_id, path_id = int(pptr.get("m_FileID") or 0), int(pptr.get("m_PathID") or 0)
+        if not path_id:
+            return None
+        if file_id == 0:
+            return object_id(cab_key(sf.name), path_id)
+        return object_id(externals[file_id - 1], path_id) if 0 < file_id <= len(externals) else None
+
+    preload = d.get("m_PreloadTable") or []
+    out = []
+    for entry in d.get("m_Container") or []:
+        path, info = str(entry[0]), entry[1] if len(entry) > 1 else {}
+        main = oid(info.get("asset") or {})
+        if main is None:
+            continue
+        meshes = []
+        start, size = int(info.get("preloadIndex") or 0), int(info.get("preloadSize") or 0)
+        for pptr in preload[start:start + min(size, 4096)]:
+            target = sf.objects.get(int(pptr.get("m_PathID") or 0)) if int(pptr.get("m_FileID") or 0) == 0 else None
+            try:
+                if target is not None and target.type.name == "Mesh":
+                    meshes.append(oid(pptr))
+            except Exception:
+                continue
+        out.append([path, main, meshes[:64]])
+    return out
 
 
 def _mesh_header(obj, node_cache: dict) -> tuple[str | None, dict[str, Any]]:
@@ -293,6 +344,7 @@ class UnityPyAdapter(ToolAdapter):
         """
         env = self.load(path)
         files, counts, asset_paths, text_assets, meshes, scriptables = [], {}, [], [], [], []
+        container_entries: list[list[Any]] = []
         node_cache: dict = {}
         for sf in self.serialized_files(env):
             externals = [cab_key(e.path) for e in sf.externals]
@@ -310,6 +362,7 @@ class UnityPyAdapter(ToolAdapter):
                         if cls == "AssetBundle":
                             d = obj.parse_as_dict(check_read=False)
                             asset_paths += [str(entry[0]) for entry in d.get("m_Container") or []]
+                            container_entries += _container_entries(sf, d, externals)
                         elif cls == "Mesh" and len(meshes) < 20000:
                             # Name and bone hashes (header only, no vertex data): lets renderers whose mesh the
                             # game assigns at runtime be matched to a real mesh no prefab references directly.
@@ -327,6 +380,7 @@ class UnityPyAdapter(ToolAdapter):
                 except Exception:
                     pass
         return {"serialized_files": files, "class_counts": counts, "asset_paths": sorted(set(asset_paths))[:20000],
+                "container_entries": container_entries[:50000],
                 "text_assets": [t for t in text_assets if t[2]], "meshes": [m for m in meshes if m[2]],
                 "scriptables": scriptables}
 
@@ -358,6 +412,9 @@ class UnityPyAdapter(ToolAdapter):
                     rec["info"] = _class_info(cls, d)
                     if cls == "MonoBehaviour" and isinstance(d.get("m_Script"), dict):
                         rec["info"]["script"] = d["m_Script"].get("m_PathID")
+                        strings = list(iter_asset_path_strings(d))
+                        if strings:  # assets named by path (strings), e.g. XRender PlatformData mesh/material
+                            rec["info"]["asset_path_strings"] = strings[:500]
                     if cls not in NO_REF_WALK:
                         for field_path, file_id, path_id in iter_pptrs(d):
                             if file_id == 0:

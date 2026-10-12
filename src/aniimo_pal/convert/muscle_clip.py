@@ -222,7 +222,8 @@ def _rotation_rows(bindings: list[dict[str, Any]], widths: list[int]) -> list[li
     return rows
 
 
-def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str]) -> dict[str, Any]:
+def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str],
+                rest: dict[str, dict[str, list[float]]] | None = None) -> dict[str, Any]:
     """Parsed AnimationClip dict (UnityPy ``parse_as_dict``) -> ``aniimo-pal/clip`` document.
 
     ``hash_to_path``: binding path hash -> transform path (Avatar TOS or skeleton paths).
@@ -309,7 +310,7 @@ def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str]) -> dict[str, An
     warnings = []
     if unknown_hashes:
         warnings.append(f"{len(unknown_hashes)} bound path hash(es) not found in the skeleton")
-    return {
+    clip = {
         "schema": SCHEMA_ID, "schema_version": SCHEMA_VERSION, "name": d.get("m_Name"), "space": "unity-local",
         "sample_rate": rate, "start_time": start, "stop_time": stop,
         "loop": bool(muscle.get("m_LoopTime", 0)), "legacy": bool(d.get("m_Legacy", 0)),
@@ -318,6 +319,8 @@ def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str]) -> dict[str, An
                     "float": e.get("floatParameter"), "int": e.get("intParameter")} for e in d.get("m_Events") or []],
         "warnings": warnings, "source": "unitypy-muscle-clip", "decoder": decoder,
     }
+    decoder["validation"] = validate_clip(clip, rest)
+    return clip
 
 
 def hash_lookup(paths: list[str], root_name: str | None = None, tos: list[tuple[int, str]] | None = None) -> dict[int, str]:
@@ -331,4 +334,88 @@ def hash_lookup(paths: list[str], root_name: str | None = None, tos: list[tuple[
             out.setdefault(path_hash(f"{root_name}/{p}"), p)
     for h, p in tos or []:
         out[int(h)] = p
+    return out
+
+
+def avatar_tables(d: dict[str, Any]) -> dict[str, Any]:
+    """From a parsed Avatar: TOS (path hash -> path) and the skeleton rest pose per path hash (verified data)."""
+    tos = [(int(h), str(p)) for h, p in d.get("m_TOS") or [] if p is not None]
+    rest: dict[int, dict[str, list[float]]] = {}
+    try:
+        avatar = d.get("m_Avatar") or {}
+        ids = (avatar.get("m_AvatarSkeleton") or {}).get("m_ID") or []
+        xs = (avatar.get("m_AvatarSkeletonPose") or {}).get("m_X") or []
+        for h, x in zip(ids, xs, strict=False):
+            t, q, s = x.get("t") or {}, x.get("q") or {}, x.get("s") or {}
+            rest[int(h)] = {"position": [t.get("x", 0.0), t.get("y", 0.0), t.get("z", 0.0)],
+                            "rotation": [q.get("x", 0.0), q.get("y", 0.0), q.get("z", 0.0), q.get("w", 1.0)],
+                            "scale": [s.get("x", 1.0), s.get("y", 1.0), s.get("z", 1.0)]}
+    except Exception:  # an Avatar layout this code does not know: no rest pose, the TOS still names bones
+        rest = {}
+    return {"tos": tos, "rest_by_hash": rest}
+
+
+def validate_clip(clip: dict[str, Any], rest: dict[str, dict[str, list[float]]] | None = None) -> dict[str, Any]:
+    """Checks beyond unit quaternions: bones named, continuity, positions/scales against the rest pose, motion.
+
+    ``rest``: {path: {"position", "rotation", "scale"}} in Unity local space (Avatar pose or prefab transforms).
+    Wrong curve mapping shows up as unnamed bones, frame-to-frame jumps, bone offsets far from their rest
+    length, or scales far from rest. These are plausibility checks, not proof; the motion summary is meant
+    to be compared with the game.
+    """
+    import numpy as np
+
+    tracks = clip["tracks"]
+    named = [t for t in tracks if not t["path"].startswith("hash:")]
+    out: dict[str, Any] = {"tracks": len(tracks), "tracks_on_named_bones": len(named),
+                           "float_tracks": len(clip.get("float_tracks") or [])}
+    rot_jumps, worst_jump, motion = 0, 0.0, []
+    steps = 0
+    for t in tracks:
+        v = np.array([k["v"] for k in t["keys"]], dtype=float)
+        if len(v) < 2:
+            continue
+        if t["channel"] == "rotation":
+            dots = np.clip(np.abs((v[1:] * v[:-1]).sum(axis=1)), 0.0, 1.0)
+            angles = np.degrees(2 * np.arccos(dots))
+            steps += len(angles)
+            rot_jumps += int((angles > 30.0).sum())
+            worst_jump = max(worst_jump, float(angles.max()))
+            from_start = np.degrees(2 * np.arccos(np.clip(np.abs(v @ v[0]), 0.0, 1.0)))
+            motion.append((float(from_start.max()), t["path"]))
+    out["rotation_steps_over_30_deg"] = rot_jumps
+    out["rotation_steps"] = steps
+    out["largest_rotation_step_deg"] = round(worst_jump, 2)
+    out["most_moving_bones"] = [{"path": p, "max_rotation_deg": round(a, 1)} for a, p in sorted(motion)[::-1][:8]]
+    if rest:
+        ratios, scale_ok, scale_n, rot_ok, rot_n = [], 0, 0, 0, 0
+        for t in tracks:
+            r = rest.get(t["path"])
+            if not r:
+                continue
+            first = np.array(t["keys"][0]["v"], dtype=float)
+            if t["channel"] == "position":
+                rest_len = float(np.linalg.norm(r["position"]))
+                if rest_len > 1e-4:
+                    ratios.append(float(np.linalg.norm(first)) / rest_len)
+            elif t["channel"] == "scale":
+                values = np.array([k["v"] for k in t["keys"]], dtype=float)
+                ref = np.array(r["scale"], dtype=float)
+                with np.errstate(all="ignore"):
+                    rel = values / np.where(np.abs(ref) > 1e-6, ref, 1.0)
+                scale_ok += int(((rel > 0.5) & (rel < 2.0)).all(axis=1).sum())
+                scale_n += len(values)
+            elif t["channel"] == "rotation":
+                q0 = np.array(r["rotation"], dtype=float)
+                angle = float(np.degrees(2 * np.arccos(min(1.0, abs(float(first @ q0))))))
+                rot_n += 1
+                rot_ok += angle < 90.0
+        if ratios:
+            arr = np.array(ratios)
+            out["bone_offsets_vs_rest"] = {"tracks": len(arr), "within_20_percent": int(((arr > 0.8) & (arr < 1.25)).sum()),
+                                           "median_ratio": round(float(np.median(arr)), 3)}
+        if scale_n:
+            out["scale_samples_within_half_to_double_of_rest"] = f"{scale_ok}/{scale_n}"
+        if rot_n:
+            out["rotations_within_90_deg_of_rest_at_frame_0"] = f"{rot_ok}/{rot_n}"
     return out

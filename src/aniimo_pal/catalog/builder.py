@@ -159,7 +159,7 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
                           "root_bone": path_of_transform.get(root_bone["id"]) if root_bone else None,
                           "materials": chain["materials"],
                           "materials_source": chain["source"], "materials_missing": chain["missing"],
-                          "component_mesh": chain["mesh"],
+                          "component_mesh": chain["mesh"], "path_assignments": chain["path_assignments"],
                           # Hidden in the prefab (this object or a parent inactive): an alternative state the
                           # game switches on at runtime, e.g. Grizbo's "Rampage" fur.
                           "active": _active_in_prefab(own_active, path_of_transform.get(
@@ -216,6 +216,12 @@ def _data_asset_parts(idx: ObjectIndex, refs: list[dict[str, Any]], depth: int =
                                                                   for r in target["refs"]):
             continue  # not a decoded data asset (components sit on GameObjects)
         name = target.get("name") or ref["target"]
+        by_path = _path_configs(idx, target)
+        if by_path:
+            best = by_path[0]
+            mats = [m["object"] for m in best["materials"] if m["object"] in idx.by_id]
+            return (mats, [best["mesh"]["object"]] if best["mesh"] and best["mesh"]["object"] in idx.by_id else [],
+                    f"{ref['field']}:{name}.{best['group']}", by_path)
         inner = [r for r in target["refs"] if r["field"] != "m_Script"]
         meshes = [r for r in inner if (idx.get(r["target"]) or {}).get("class") == "Mesh"]
         mats = [r for r in inner if (idx.get(r["target"]) or {}).get("class") == "Material"]
@@ -226,12 +232,82 @@ def _data_asset_parts(idx: ObjectIndex, refs: list[dict[str, Any]], depth: int =
                 same = [r for r in mats if key and _element_key(r["field"]) == key]
                 mats = same or mats
             return ([r["target"] for r in mats], [mesh["target"]] if mesh else [],
-                    f"{ref['field']}:{name}" + (f".{mesh['field']}" if mesh else ""))
+                    f"{ref['field']}:{name}" + (f".{mesh['field']}" if mesh else ""), None)
         if depth > 1:
             deeper = _data_asset_parts(idx, inner, depth - 1)
             if deeper:
-                return deeper[0], deeper[1], f"{ref['field']}:{name} -> {deeper[2]}"
+                return deeper[0], deeper[1], f"{ref['field']}:{name} -> {deeper[2]}", deeper[3]
     return None
+
+
+_MATERIAL_FIELD = re.compile(r"^(?P<group>.*?)\.?(?P<list>[^.\[]*material[^.\[]*)\[(?P<k>\d+)\]", re.IGNORECASE)
+_MESH_FIELD = re.compile(r"^(?P<group>.*?)\.?(?P<field>[^.\[]*mesh[^.\[]*)(\.|$)", re.IGNORECASE)
+_MOBILE_WORDS = ("mobile", "android", "ios", "low")
+
+
+def resolve_asset_path(idx: ObjectIndex, value: str, want: str | None = None) -> dict[str, Any]:
+    """An asset path string -> object, exactly through the AssetBundle container paths (case-insensitive).
+
+    ``want="Mesh"``: a model file's path resolves to its single mesh (from the asset's preload objects).
+    Several bundles listing the same path (original and patch): the newest patch bundle (xptNN_) is used and
+    the choice is reported.
+    """
+    copies = (idx.doc.get("asset_index") or {}).get(value.replace("\\", "/").lower())
+    out: dict[str, Any] = {"path": value, "object": None}
+    if not copies:
+        out["status"] = "path not listed by any scanned bundle"
+        return out
+    copy = max(copies, key=lambda c: (_patch_level(c["container"]), c["container"]))
+    if len({c["object"] for c in copies}) > 1:
+        out["note"] = f"{len(copies)} bundles list this path; newest patch bundle used: {copy['container']}"
+    obj = idx.get(copy["object"])
+    cls = (obj or {}).get("class")
+    if want == "Mesh" and cls != "Mesh":
+        meshes = copy.get("meshes") or []
+        if len(meshes) == 1:
+            out.update(object=meshes[0], status=f"resolved (the model file's only mesh; main asset {cls or '?'})")
+        else:
+            out["status"] = f"model file has {len(meshes)} meshes; which one is not named"
+            out["candidates"] = meshes[:8]
+        return out
+    out.update(object=copy["object"], status="resolved" if obj else "resolved (object not in the object list)",
+               container=copy["container"])
+    if obj is not None and want and cls != want:
+        out["status"] = f"path names a {cls}, not a {want}"
+        out["object"] = None
+    return out
+
+
+def _path_configs(idx: ObjectIndex, asset: dict[str, Any]) -> list[dict[str, Any]]:
+    """Mesh/material assignments a data asset makes by path strings, grouped per renderer entry, best first.
+
+    Field paths keep platform config, LOD and order, e.g. ``m_DefaultConfig.m_Lods[0].m_Renderers[0].m_MeshPath.m_Path``
+    and ``...m_Renderers[0].m_MaterialList[2].m_Path``. Ranking: non-mobile config first (default/PC), then
+    lowest LOD, then renderer entry; material order is kept.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for field, value in (asset.get("info") or {}).get("asset_path_strings") or []:
+        m = _MATERIAL_FIELD.match(field)
+        if m:
+            g = groups.setdefault(m["group"], {"group": m["group"], "mesh": None, "materials": []})
+            g["materials"].append(dict(resolve_asset_path(idx, value, "Material"), index=int(m["k"]), field=field))
+            continue
+        m = _MESH_FIELD.match(field)
+        if m:
+            g = groups.setdefault(m["group"], {"group": m["group"], "mesh": None, "materials": []})
+            g["mesh"] = dict(resolve_asset_path(idx, value, "Mesh"), field=field)
+    out = []
+    for g in groups.values():
+        g["materials"].sort(key=lambda x: x["index"])
+        head = g["group"].split(".", 1)[0].lower()
+        nums = [int(n) for n in re.findall(r"\[(\d+)\]", g["group"])]
+        g["config"] = g["group"].split(".", 1)[0]
+        g["mobile"] = any(w in head for w in _MOBILE_WORDS)
+        g["lod"] = nums[0] if nums else 0
+        g["rank"] = (g["mobile"], "default" not in head and "pc" not in head, *nums, g["group"])
+        out.append(g)
+    out.sort(key=lambda g: g.pop("rank"))
+    return out
 
 
 def _cab_owners(idx: ObjectIndex) -> dict[str, str]:
@@ -268,7 +344,7 @@ def _material_chain(idx: ObjectIndex, r: dict[str, Any], go: dict[str, Any],
     raw = [ref for ref in r["refs"] if ref["field"] == "m_Materials" or ref["field"].startswith("m_Materials[")]
     resolved = [m["id"] for m in idx.refs(r, "m_Materials") if m["class"] == "Material"]
     out: dict[str, Any] = {"materials": resolved, "source": "renderer" if resolved else None, "missing": None,
-                           "mesh": None}
+                           "mesh": None, "path_assignments": None}
     for mb in behaviours:
         keys = {_element_key(ref["field"]) for ref in mb["refs"] if ref["target"] in (r["id"], go["id"])}
         if not keys:
@@ -290,8 +366,15 @@ def _material_chain(idx: ObjectIndex, r: dict[str, Any], go: dict[str, Any],
                 hop = _data_asset_parts(idx, [ref for ref in group if ref["field"] not in ("m_GameObject",
                                                                                            "m_Script")])
                 if hop:
-                    mats, meshes, via = hop
+                    mats, meshes, via, configs = hop
                     evidence += f" -> {via}"
+                    if configs:
+                        out["path_assignments"] = configs
+                        bad = [m for c in configs[:1] for m in ([c["mesh"]] if c["mesh"] else []) + c["materials"]
+                               if m["object"] not in idx.by_id]
+                        if bad:
+                            out["missing"] = f"{evidence}: " + "; ".join(f"{b['path']} ({b['status']})"
+                                                                       for b in bad[:3])
             if mats and not out["materials"]:
                 out.update(materials=mats, source=evidence)
             if len(meshes) == 1 and out["mesh"] is None:

@@ -544,6 +544,13 @@ def _follow_lines(ref: dict[str, Any], indent: str) -> list[str]:
         return []
     out = [f"{indent}{ref['field']} -> {follow.get('name')} "
            f"({(follow.get('script') or {}).get('class_name') or '?'}): {len(follow['references'])} references"]
+    for ps in follow.get("asset_path_strings") or []:
+        what = f"{ps.get('class')} {ps.get('name')}" if ps.get("object") else ps.get("status")
+        out.append(f"{indent}  {ps['field']} = {ps['path']} -> {what}")
+        for t in (ps.get("material") or {}).get("texture_slots", []):
+            out.append(f"{indent}    {t['slot']} -> {t.get('name') or t['status']}")
+        for m in ps.get("model_meshes") or []:
+            out.append(f"{indent}    mesh in the model file: {m.get('name')}")
     for r in follow["references"]:
         if r.get("class") in ("Mesh", "Material", "Texture2D"):
             extra = f", {r.get('vertex_count')} vertices" if r.get("class") == "Mesh" else ""
@@ -586,11 +593,15 @@ def cmd_probe_clip(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.probe import probe_clip
 
     objects = _read_json(args.objects) if args.objects else None
-    paths = None
+    paths, rest = None, None
     if args.creature:
-        paths = [b["path"] for b in (_read_json(args.creature).get("skeleton") or {}).get("bones", [])]
+        from aniimo_pal.convert.skin_assembly import skeleton_locals
+
+        skeleton = _read_json(args.creature).get("skeleton") or {}
+        paths = [b["path"] for b in skeleton.get("bones", [])]
+        rest = skeleton_locals(skeleton)
     rep = probe_clip(args.root, name=args.name, container=args.container, objects_doc=objects, skeleton_paths=paths,
-                     raw=args.raw)
+                     raw=args.raw, skeleton_rest=rest)
     st = rep["structure"]
     lines = [f"{rep['name']} ({rep['object']}): {st['bindings']} bindings need {st['curves_needed_by_bindings']} curves; "
              f"known curve sets hold {st['curves_in_known_sets']}",
@@ -601,6 +612,18 @@ def cmd_probe_clip(args: argparse.Namespace, config: Config) -> int:
     reading = (rep["decoder"].get("details") or {}).get("quantized_reading")
     if reading:
         lines.append(f"QuantizedClip reading: {reading}")
+    lines.append(f"bone names from: {rep['bone_names_from']}; rest pose from: {rep['rest_pose_from']}")
+    val = rep["decoder"].get("validation")
+    if val:
+        lines.append(f"tracks on named bones: {val['tracks_on_named_bones']} of {val['tracks']}; rotation steps over "
+                     f"30 deg: {val['rotation_steps_over_30_deg']} of {val['rotation_steps']} (largest "
+                     f"{val['largest_rotation_step_deg']} deg)")
+        for key in ("bone_offsets_vs_rest", "scale_samples_within_half_to_double_of_rest",
+                    "rotations_within_90_deg_of_rest_at_frame_0"):
+            if key in val:
+                lines.append(f"{key}: {val[key]}")
+        lines.append("most moving bones: " + ", ".join(f"{m['path'].rsplit('/', 1)[-1]} {m['max_rotation_deg']}deg"
+                                                       for m in val["most_moving_bones"][:6]))
     for t in (rep["decoder"].get("quantized_search") or {}).get("top", [])[:3]:
         lines.append(f"  candidate reading (score {t['score']}): " + ", ".join(f"{k}={v}" for k, v in t.items()
                                                                             if k != "score"))

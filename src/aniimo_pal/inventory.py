@@ -50,7 +50,7 @@ log = get_logger("inventory")
 SCHEMA_ID = "aniimo-pal/objects"
 SCHEMA_VERSION = "0.2.0"
 INVENTORY_KINDS = ("unity_bundle", "unity_serialized")
-CACHE_FORMAT = "inv-3"  # bump when per-container records change
+CACHE_FORMAT = "inv-4"  # bump when per-container records change
 VERIFY_MODES = ("quick", "hash", "none")
 
 
@@ -175,7 +175,7 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
     if cache:
         cache.mkdir(parents=True, exist_ok=True)
     deep_tag = f"{CACHE_FORMAT}-{'all' if all_objects else 'relevant'}-{unitypy_version()}"
-    survey_tag = f"survey-5-{unitypy_version()}"
+    survey_tag = f"survey-6-{unitypy_version()}"
 
     candidates, skipped = [], []
     for entry in manifest["files"]:
@@ -265,10 +265,12 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
     deep: dict[str, dict[str, Any]] = {}
     behaviour_assets: dict[str, dict[str, Any]] = {}  # id -> decoded MonoBehaviour data asset
     rounds = 0
+    # The survey also yields the asset path index (AssetBundle m_Container): needed in both strategies.
+    surveys = run_phase(ok_entries, _survey_container, survey_tag, "survey")
+    asset_index = _asset_index(surveys)
     if strategy == "full":
         deep = run_phase(ok_entries, _inventory_container, deep_tag, "deep read")
     else:
-        surveys = run_phase(ok_entries, _survey_container, survey_tag, "survey")
         cab_owner: dict[str, str] = {}
         for rel, res in surveys.items():
             for sf in res.get("serialized_files", []):
@@ -321,6 +323,11 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
             new_behaviours = found
             # Follow references into containers not read yet (shared materials, textures, animations).
             wanted = set()
+            for obj in found:  # assets named by path strings (e.g. PlatformData mesh and material paths)
+                for _field, value in (obj.get("info") or {}).get("asset_path_strings") or []:
+                    for copy in asset_index.get(value.replace("\\", "/").lower(), []):
+                        if copy["container"] not in deep:
+                            wanted.add(copy["container"])
             for obj in [o for res in new.values() for o in res.get("objects", [])] + found:
                 for ref in obj["refs"]:
                     cab = ref["target"].rsplit(":", 1)[0]
@@ -412,8 +419,18 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
         },
         "containers": containers,
         "skipped": skipped,
+        # Asset path (lower case, as in AssetBundle m_Container) -> copies [{object, container, meshes}].
+        "asset_index": asset_index,
         "objects": objects,
     }
+
+
+def _asset_index(surveys: dict[str, dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for rel, res in sorted(surveys.items()):
+        for path, main, meshes in res.get("container_entries") or []:
+            index[path.replace("\\", "/").lower()].append({"object": main, "container": rel, "meshes": meshes})
+    return dict(index)
 
 
 def summary_path(objects_path: str | Path) -> Path:

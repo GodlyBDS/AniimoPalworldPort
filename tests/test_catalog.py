@@ -566,3 +566,58 @@ def test_mesh_and_material_found_through_a_renderer_components_data_asset(tmp_pa
     assert skin["materials_source"] == ("component:XSkinnedMeshRenderer -> m_PlatformData:"
                                         "P_Parmon_10351_M_Parmon_10351_Body_PlatformData.m_Default.m_Mesh")
     assert skin["mesh_name"] == "M_Parmon_10351_Body_42424242" and skin["mesh_provenance"] == "verified-link"
+
+
+def test_platform_data_paths_resolve_exactly_through_bundle_container_paths(tmp_path):
+    """XRender PlatformData names mesh and materials by path strings (seen in the real install):
+    m_DefaultConfig.m_Lods[i].m_Renderers[j].m_MeshPath.m_Path / .m_MaterialList[k].m_Path."""
+    doc, oid, root, smr, mat, mesh, _gos = _component_game(tmp_path)
+    go_id = f"cab-p:{smr.data['m_GameObject']['m_PathID']}"
+    go = next(o for o in doc["objects"] if o["id"] == go_id)
+    mat2 = next(o["id"] for o in doc["objects"] if o["class"] == "Texture2D")  # any non-material object
+    lod0 = "m_DefaultConfig.m_Lods[0].m_Renderers[0]"
+    strings = [
+        ["m_MobileConfig.m_Lods[0].m_Renderers[0].m_MeshPath.m_Path", "Assets/Res/Low/M_Parmon_10351_Body.fbx"],
+        [f"{lod0}.m_MeshPath.m_Path", "Assets/Res/Parmon/10351/M_Parmon_10351_Body.fbx"],
+        [f"{lod0}.m_MaterialList[1].m_Path", "Assets/Res/Parmon/10351/MI_Missing.mat"],
+        [f"{lod0}.m_MaterialList[0].m_Path", "Assets/Res/Parmon/10351/MI_Parmon_10351_Body_01a.mat"],
+        ["m_DefaultConfig.m_Lods[1].m_Renderers[0].m_MeshPath.m_Path", "Assets/Res/Parmon/10351/LOD1.fbx"],
+    ]
+    doc["asset_index"] = {
+        "assets/res/parmon/10351/m_parmon_10351_body.fbx": [{"object": "cab-p:777", "container": "p.uab",
+                                                             "meshes": [f"cab-p:{mesh}"]}],
+        "assets/res/parmon/10351/mi_parmon_10351_body_01a.mat": [
+            {"object": mat2, "container": "old.uab", "meshes": []},  # an older copy...
+            {"object": f"cab-p:{mat}", "container": "xpt24_patch.uab", "meshes": []}],  # ...and its patch
+    }
+    doc["objects"] += [
+        {"id": "cab-d:1", "cab": "cab-d", "path_id": 1, "class": "MonoScript", "class_id": 115,
+         "name": "XSkinnedMeshRenderer", "refs": [], "info": {"class_name": "XSkinnedMeshRenderer"}, "container": "d"},
+        {"id": "cab-d:2", "cab": "cab-d", "path_id": 2, "class": "MonoBehaviour", "class_id": 114, "name": None,
+         "info": {}, "container": "d", "refs": [{"field": "m_GameObject", "target": go_id},
+                                                {"field": "m_Script", "target": "cab-d:1"},
+                                                {"field": "m_PlatformData", "target": "cab-d:3"}]},
+        {"id": "cab-d:3", "cab": "cab-d", "path_id": 3, "class": "MonoBehaviour", "class_id": 114,
+         "name": "P_Parmon_10351_M_Parmon_10351_Body_PlatformData", "container": "d", "refs": [],
+         "info": {"asset_path_strings": strings}},
+    ]
+    go["refs"].append({"field": "m_Component[5].component", "target": "cab-d:2"})
+    sp = build_catalog(doc)["species"][0]
+    (skin,) = sp["skeleton"]["skins"]
+    assert skin["mesh_name"] == "M_Parmon_10351_Body_42424242" and skin["mesh_provenance"] == "verified-link"
+    assert skin["materials"] == [f"cab-p:{mat}"]  # material 0 (patched copy); material 1 does not resolve
+    assert skin["materials_source"].endswith("m_PlatformData:P_Parmon_10351_M_Parmon_10351_Body_PlatformData."
+                                             "m_DefaultConfig.m_Lods[0].m_Renderers[0]")
+    configs = skin["path_assignments"]
+    assert [c["group"] for c in configs] == [lod0, "m_DefaultConfig.m_Lods[1].m_Renderers[0]",
+                                             "m_MobileConfig.m_Lods[0].m_Renderers[0]"]
+    assert [m["index"] for m in configs[0]["materials"]] == [0, 1] and "newest patch" in configs[0]["materials"][0]["note"]
+    assert "MI_Missing.mat (path not listed" in skin["materials_missing"]
+
+
+def test_inventory_records_bundle_container_paths(tmp_path):
+    data, ids = ub.creature_bundle("Foxlet")
+    (tmp_path / "foxlet.uab").write_bytes(data)
+    doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
+    (copy,) = doc["asset_index"]["assets/creatures/foxlet/foxlet.prefab"]
+    assert copy["object"] == f"cab-foxlet:{ids['normal'].root_go}" and copy["container"] == "foxlet.uab"

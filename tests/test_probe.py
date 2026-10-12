@@ -47,6 +47,9 @@ def test_follow_shows_mesh_and_material_held_by_a_data_asset():
 
     objs = {
         "c:1": ("MonoBehaviour", {"m_Name": "P_X_Body_PlatformData", "m_Script": {"m_FileID": 0, "m_PathID": 9},
+                                  "m_DefaultConfig": {"m_Lods": [{"m_Renderers": [{
+                                      "m_MeshPath": {"m_Path": "Assets/X/M_X_Body.fbx"},
+                                      "m_MaterialList": [{"m_Path": "Assets/X/MI_X_Body_01a.mat"}]}]}]},
                                   "m_Mesh": {"m_FileID": 0, "m_PathID": 2},
                                   "m_Materials": [{"m_FileID": 0, "m_PathID": 3}]}),
         "c:9": ("MonoScript", {"m_ClassName": "XRenderPlatformData"}),
@@ -63,6 +66,9 @@ def test_follow_shows_mesh_and_material_held_by_a_data_asset():
 
     class Res:
         readers = {k: Reader(v[0]) for k, v in objs.items()}
+        cab_container: dict = {}
+        asset_index = {"assets/x/mi_x_body_01a.mat": [{"object": "c:3", "container": "m.uab", "meshes": []}],
+                       "assets/x/m_x_body.fbx": [{"object": "c:7", "container": "m.uab", "meshes": ["c:2"]}]}
 
         def read(self, oid):
             return dict(objs[oid][1]) if oid in objs else None
@@ -82,3 +88,7 @@ def test_follow_shows_mesh_and_material_held_by_a_data_asset():
     assert by_field["m_Mesh"]["name"] == "M_X_Body_123" and by_field["m_Mesh"]["vertex_count"] == 812
     assert by_field["m_Materials[0]"]["material"]["texture_slots"][0]["name"] == "T_X_Body_D"
     assert {"Mesh", "Material"} <= _reachable_classes([{"class": "MonoBehaviour", "follow": out}])
+    mesh_path, mat_path = out["asset_path_strings"]
+    assert mesh_path["field"] == "m_DefaultConfig.m_Lods[0].m_Renderers[0].m_MeshPath.m_Path"
+    assert mesh_path["model_meshes"][0]["name"] == "M_X_Body_123"
+    assert mat_path["material"]["texture_slots"][0]["name"] == "T_X_Body_D"
