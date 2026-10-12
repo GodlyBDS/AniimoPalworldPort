@@ -22,9 +22,15 @@ from pathlib import Path
 from typing import Any
 
 from aniimo_pal.creature.combat import new_combat_section, validate_combat, validate_variant_overrides
+from aniimo_pal.creature.profile import (
+    validate_source_profile,
+    validate_translation,
+    validate_variant_profile_overrides,
+)
 from aniimo_pal.creature.variants import variant_probabilities
 from aniimo_pal.errors import ToolkitError
 from aniimo_pal.manifest.io import write_json_atomic
+from aniimo_pal.systems import GameSystem, bundled_system
 
 SCHEMA_ID = "aniimo-pal/creature"
 SCHEMA_VERSION = "0.2.0"
@@ -65,11 +71,19 @@ def new_creature(creature_id: str, display_name: str) -> dict[str, Any]:
         "integration": {"mode": "replace", "replace_target": None, "notes": ""},
         "skeleton": None,
         "combat": new_combat_section(),
+        # Original Aniimo stats/elements/work and their Palworld translation (see creature/profile.py).
+        "source_profile": None,
+        "translation": None,
     }
 
 
-def validate_creature(data: Any) -> list[str]:
-    """Return a list of problems (empty when valid)."""
+def validate_creature(data: Any, source_system: GameSystem | None = None,
+                      target_system: GameSystem | None = None) -> list[str]:
+    """Return a list of problems (empty when valid).
+
+    Stat/element/work vocabularies are checked against the given game-system
+    definitions, defaulting to the bundled (unverified) Aniimo and Palworld ones.
+    """
     if not isinstance(data, dict):
         return ["creature project must be a JSON object"]
     errors: list[str] = []
@@ -156,6 +170,12 @@ def validate_creature(data: Any) -> list[str]:
     errors.extend(validate_combat(data.get("combat"), anim_objects, other_objects))
     if isinstance(variants, dict) and variants:
         errors.extend(validate_variant_overrides(variants))
+
+    src = source_system or bundled_system("aniimo")
+    dst = target_system or bundled_system("palworld")
+    errors.extend(validate_source_profile(data.get("source_profile"), src))
+    errors.extend(validate_translation(data.get("translation"), data.get("source_profile"), dst))
+    errors.extend(validate_variant_profile_overrides(data, src, dst))
 
     integ = data.get("integration") or {}
     if integ.get("mode") not in INTEGRATION_MODES:

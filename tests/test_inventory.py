@@ -86,3 +86,30 @@ def test_cab_key_and_pptr_walk():
             "m_TexEnvs": [("_MainTex", {"m_Texture": {"m_FileID": 1, "m_PathID": 9}})],
             "numbers": [1, 2, 3]}
     assert list(iter_pptrs(data)) == [("m_Materials[0]", 0, 5), ("m_TexEnvs[0][1].m_Texture", 1, 9)]
+
+
+def test_text_assets_described_and_searchable(tmp_path, capsys):
+    import json
+
+    from aniimo_pal.cli import EXIT_OK, main
+
+    b = ub.SerializedBuilder()
+    b.add(49, m_Name="MonsterStatTable", m_Script="id,hp,atk\n1,80,101\n")
+    b.add(49, m_Name="ElementConfig", m_Script='{"elements": ["fire"]}')
+    b.add(49, m_Name="WorkBlob", m_Script=b"\x00\x01\xff\xfe".decode("utf-8", "surrogateescape"))
+    b.add(49, m_Name="Readme", m_Script="hello")
+    (tmp_path / "game").mkdir()
+    (tmp_path / "game" / "data.bundle").write_bytes(ub.bundle(b.build(), "CAB-data"))
+    doc = build_inventory(scan(tmp_path / "game", ScanConfig()), tmp_path / "game")
+    info = {o["name"]: o["info"] for o in doc["objects"] if o["class"] == "TextAsset"}
+    assert info == {"MonsterStatTable": {"size": 19, "content": "csv"},
+                    "ElementConfig": {"size": 22, "content": "json"},
+                    "WorkBlob": {"size": 4, "content": "binary"},
+                    "Readme": {"size": 5, "content": "text"}}
+    objs = tmp_path / "objects.json"
+    objs.write_text(json.dumps(doc))
+    capsys.readouterr()
+    assert main(["objects", str(objs), "--class", "TextAsset", "--name", "stat|element|work", "--json"]) == EXIT_OK
+    assert sorted(o["name"] for o in json.loads(capsys.readouterr().out)) == ["ElementConfig", "MonsterStatTable",
+                                                                            "WorkBlob"]
+    assert main(["objects", str(objs), "--name", "("]) == 2

@@ -12,8 +12,9 @@
 | 5 | UE 5.1 Python import script + Palworld mod scaffold; **replace mode** for one test creature | Planned |
 | 6 | **New-Pal mode**: data rows (PalSchema), spawners, variants as separate rows, persistence checks | Planned, needs research |
 | 7 | **Combat translation + in-game testing**: combat discovery (events, controller states, skill data), reusable combat templates, **Ultimate → Partner Skill** framework, AI usage rules, combat validation | Planned, starts with a research spike (architecture §9) |
-| 8 | Studio GUI (guided workflow, 3D preview, association review, variant + combat mapping panels, validation report) | Planned |
-| 9 | Mod packs, compatibility checks, distributable build | Planned |
+| 8 | **Stats, element & work-suitability translation**: data-table discovery on real data, verified system definitions, normalisation + balancing presets (Faithful / Vanilla Balanced / Custom), element and work mapping tables, variant-specific verified differences | Planned; schema, vocabularies and validation already in place (architecture §10) |
+| 9 | Studio GUI (guided workflow, 3D preview, association review, variant, combat, stats and work panels, validation report) | Planned |
+| 10 | Mod packs, compatibility checks, distributable build | Planned |
 
 Combat translation (M7) only starts once extraction and conversion
 (M4–M6) work reliably on real creatures. Its data shape is already reserved and
@@ -34,6 +35,8 @@ animation events) without migrations.
 | UnityPy extraction: correct PNG pixels per variant, OBJ geometry, material → texture file links, clip events, skeleton JSON | `tests/test_workflow.py` |
 | AssetRipper adapter protocol (launch, form encoding, completion markers, timeouts, startup failures) | Fake server in CI (`tests/fake_assetripper.py`) **and** a real AssetRipper build (master @ beeb50e) via `ASSETRIPPER_PATH=… pytest -k real` |
 | Combat section schema (multi-phase abilities, Ultimate → Partner Skill default, provenance) | `tests/test_creature.py` |
+| Stats/elements/work schema: vocabulary checks against system definitions, unmapped elements handled explicitly, work-level ranges, variant inheritance and overrides, rarity/combat kept out | `tests/test_profile.py` |
+| TextAsset description + `objects` search (data-table discovery) | `tests/test_inventory.py` |
 
 ## Not verified (no real files or tools available)
 
@@ -48,6 +51,10 @@ animation events) without migrations.
   in-game behaviour: **nothing has been run.**
 - Palworld facts behind new Pals, spawning, save persistence and combat (see
   `architecture.md` §6 and §9.4).
+- Both games' stat, element and work systems. The bundled system definitions
+  come from fan and community wikis and are marked `unverified`. Several facts
+  conflict, including Palworld's work-level range and the meaning of Aniimo's
+  "tiers" (architecture §10.4).
 
 ## Blockers
 
@@ -70,6 +77,10 @@ aniimo-pal inventory workspace/manifests/aniimo.json "<Aniimo dir>" -o workspace
 aniimo-pal catalog build workspace/objects.json -o workspace/catalog.json
 aniimo-pal catalog list workspace/catalog.json
 ```
+
+To find stat, element and job data, also run:
+`aniimo-pal objects workspace/objects.json --class TextAsset --class MonoBehaviour --name "stat|attr|element|job|work|monster|pet"`
+and share the list of names (not contents).
 
 Then pick one species and run `creature init --from-catalog`, `creature review`,
 `creature extract` and, with AssetRipper installed, `creature export-assetripper`.

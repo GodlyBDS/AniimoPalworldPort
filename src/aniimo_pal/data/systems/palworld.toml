@@ -1,0 +1,45 @@
+# Palworld game-system vocabulary used to validate translated creature values.
+#
+# STATUS: UNVERIFIED for the user's game version. Compiled from community wikis
+# (see `sources`). Must be confirmed against the target game's data tables
+# (e.g. DT_PalMonsterParameter, via FModel or the modding kit) before mod export.
+
+[system]
+id = "palworld"
+version = "0.1.0"
+game_version = "unknown"
+status = "unverified"
+max_elements = 2   # wiki: many Pals have two elements
+sources = [
+  "https://palworld.wiki.gg/wiki/Elements",
+  "https://palworld.wiki.gg/wiki/Work_suitability",
+]
+
+[elements]
+neutral = { name = "Neutral" }
+fire = { name = "Fire" }
+water = { name = "Water" }
+grass = { name = "Grass" }
+electric = { name = "Electric" }
+ice = { name = "Ice" }
+ground = { name = "Ground" }
+dark = { name = "Dark" }
+dragon = { name = "Dragon" }
+
+# Player-facing stat concepts; internal data-table field names are NOT confirmed.
+[stats]
+hp = { name = "HP" }
+attack = { name = "Attack" }
+defense = { name = "Defense" }
+work_speed = { name = "Work Speed" }
+move_speed = { name = "Movement Speed" }
+stamina = { name = "Stamina" }
+
+# wiki.gg: natural levels "typically" 1-8, maximum achievable 10 (condenser, books).
+# Other guides describe 1-4. Treat the range as unverified for the target version.
+[work]
+categories = ["kindling", "watering", "planting", "generating_electricity", "handiwork", "gathering",
+              "lumbering", "mining", "medicine_production", "cooling", "transporting", "farming"]
+level_min = 1
+level_max = 10
+level_status = "conflicting-sources"

@@ -24,7 +24,7 @@ aniimo-pal = "aniimo_pal.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aniimo_pal = ["schemas/*.json"]
+aniimo_pal = ["schemas/*.json", "data/systems/*.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

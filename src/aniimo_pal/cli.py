@@ -205,6 +205,25 @@ def cmd_doctor(args: argparse.Namespace, config: Config) -> int:
     return EXIT_OK
 
 
+def cmd_systems(args: argparse.Namespace, config: Config) -> int:
+    from dataclasses import asdict
+
+    from aniimo_pal.systems import bundled_system, load_system
+
+    sysdef = load_system(args.system) if args.system.endswith(".toml") else bundled_system(args.system)
+    if args.json:
+        _print_json(asdict(sysdef))
+        return EXIT_OK
+    print(f"{sysdef.id} {sysdef.version} (game {sysdef.game_version}) status={sysdef.status}")
+    print("elements: " + ", ".join(f"{k} ({v['name']})" for k, v in sysdef.elements.items()))
+    print("stats:    " + ", ".join(f"{k} ({v['name']})" for k, v in sysdef.stats.items()))
+    print("work:     " + (", ".join(sysdef.work_categories) or "(not defined yet)")
+          + f"  levels {sysdef.work_level_min}-{sysdef.work_level_max}")
+    for src in sysdef.sources:
+        print(f"source:   {src}")
+    return EXIT_OK
+
+
 def cmd_config(args: argparse.Namespace, config: Config) -> int:
     _print_json(config.to_dict())
     return EXIT_OK
@@ -356,6 +375,34 @@ def cmd_inventory(args: argparse.Namespace, config: Config) -> int:
     return EXIT_OK
 
 
+def cmd_objects_find(args: argparse.Namespace, config: Config) -> int:
+    import re
+
+    doc = _read_json(args.objects)
+    try:
+        name_re = re.compile(args.name, re.IGNORECASE) if args.name else None
+    except re.error as exc:
+        raise ToolkitError(f"invalid --name regex: {exc}") from exc
+    classes = {c.lower() for c in args.cls or []}
+    hits = []
+    for o in doc.get("objects", []):
+        if classes and o["class"].lower() not in classes:
+            continue
+        hay = " ".join(filter(None, [o.get("name"), o.get("asset_path")]))
+        if name_re and not name_re.search(hay):
+            continue
+        hits.append(o)
+    if args.json:
+        _print_json(hits[: args.limit])
+    else:
+        for o in hits[: args.limit]:
+            info = o.get("info") or {}
+            extra = f" {info.get('content')} {info.get('size')}B" if o["class"] == "TextAsset" else ""
+            print(f"{o['id']:<28} {o['class']:<20} {str(o.get('name'))[:40]:<40} {o['container']}{extra}")
+        print(f"{len(hits)} match(es)" + (f", showing {args.limit}" if len(hits) > args.limit else ""))
+    return EXIT_OK
+
+
 def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.catalog import build_catalog, load_rules
     from aniimo_pal.manifest.io import write_json_atomic
@@ -393,10 +440,18 @@ def cmd_catalog_show(args: argparse.Namespace, config: Config) -> int:
 
 def cmd_creature_validate(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.creature.model import load_creature, validate_creature
+    from aniimo_pal.creature.profile import profile_warnings
+    from aniimo_pal.systems import bundled_system, load_system
 
-    errors = validate_creature(load_creature(args.file))
+    src = load_system(args.source_system) if args.source_system else bundled_system("aniimo")
+    dst = load_system(args.target_system) if args.target_system else bundled_system("palworld")
+    data = load_creature(args.file)
+    errors = validate_creature(data, src, dst)
     for e in errors:
         print(f"invalid: {e}")
+    if isinstance(data, dict):
+        for w in profile_warnings(data, src, dst):
+            print(f"warning: {w}")
     print(f"{len(errors)} error(s)" if errors else "valid")
     return EXIT_CHECK_FAILED if errors else EXIT_OK
 
@@ -485,6 +540,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("config", help="print the effective configuration as JSON")
     p.set_defaults(func=cmd_config)
 
+    p = sub.add_parser("systems", help="show a game-system definition (elements, stats, work categories)")
+    p.add_argument("system", nargs="?", default="palworld", help="bundled id (aniimo|palworld) or a TOML path")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_systems)
+
     p = sub.add_parser("inventory", help="list objects inside supported Unity containers (UnityPy, read-only)")
     p.add_argument("manifest")
     p.add_argument("root", help="the directory the manifest was scanned from")
@@ -492,6 +552,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include", action="append", metavar="GLOB", help="only containers whose path matches")
     p.add_argument("--no-verify", action="store_true", help="skip re-hashing files against the manifest")
     p.set_defaults(func=cmd_inventory)
+
+    p = sub.add_parser("objects", help="search an object index (e.g. find stat/element/work data tables)")
+    p.add_argument("objects", help="objects.json from `inventory`")
+    p.add_argument("--class", dest="cls", action="append", metavar="CLASS",
+                   help="filter by Unity class (repeatable), e.g. TextAsset, MonoBehaviour")
+    p.add_argument("--name", metavar="REGEX", help="case-insensitive regex on object name / asset path")
+    p.add_argument("--limit", type=int, default=200)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_objects_find)
 
     catalog = sub.add_parser("catalog", help="creature catalog built from an object inventory")
     catsub = catalog.add_subparsers(dest="catalog_command", required=True, metavar="ACTION")
@@ -550,6 +619,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_creature_assetripper)
     p = csub.add_parser("validate", help="validate a creature.json")
     p.add_argument("file")
+    p.add_argument("--source-system", metavar="TOML", help="Aniimo system definition (default: bundled, unverified)")
+    p.add_argument("--target-system", metavar="TOML", help="Palworld system definition (default: bundled, unverified)")
     p.set_defaults(func=cmd_creature_validate)
     p = csub.add_parser("roll", help="simulate variant selection to check configured rarity")
     p.add_argument("file")

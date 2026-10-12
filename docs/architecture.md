@@ -54,7 +54,10 @@ src/aniimo_pal/
   unreal/                 ⬜ M5: UE 5.1 Python import script(s), run inside the editor
   modkit/                 ⬜ M5/M6: Palworld mod scaffold, PalSchema JSON, packaging metadata
   combat/                 ⬜ M7: combat discovery + translation templates (schema already reserved)
-  studio/                 ⬜ M8: GUI shell (guided workflow, 3D preview, combat mapping)
+  systems.py              ✅ versioned game-system vocabularies (bundled Aniimo/Palworld defs, unverified)
+  creature/profile.py     ✅ source_profile / translation schema, variant inheritance, warnings
+  translate/              ⬜ M8: stat, element and work translation engine + balancing presets
+  studio/                 ⬜ M9: GUI shell (guided workflow, 3D preview, combat + stats/work panels)
 ```
 
 ## 3. Data flow and documents
@@ -128,7 +131,11 @@ material/texture slots, edit the bone mapping to the target Palworld skeleton
 (replace mode) or validate a new skeleton (new_pal mode), assign animations to
 Palworld roles (idle, walk, run, attack, …), and switch between variants.
 
-The studio also gets a **Combat Mapping** panel (§9): it lists discovered
+The studio also gets a **Stats & Work Suitability** panel (§10). It shows
+original vs translated values per variant, element mappings, editable work
+categories and levels, balancing presets, reusable profiles, reset-to-auto, and
+warnings for invalid or unusually strong configurations. It also gets a
+**Combat Mapping** panel (§9): it lists discovered
 attacks and the Ultimate, previews clips and their events, lets the user assign
 clips to Palworld skill slots and the Partner Skill, and sets parameters,
 effects, AI rules and the interaction profile. It shows provenance for every
@@ -255,3 +262,87 @@ multi-phase partner skill, tested in game. Static validation (references,
 cooldown ranges, missing clips or effects) is kept separate from in-game
 verification in every report.
 
+
+## 10. Stats, element types and work suitability translation (core requirement; milestone 8)
+
+Goal: a ported Aniimo keeps its **identity** in Palworld, so a fast, fragile
+attacker stays one and a tank does not become a damage dealer. This means
+translating *relative* strengths, elemental identity and work specialisation,
+not copying numbers between two unrelated scales.
+
+### 10.1 Independent layers (each in its own place in `creature.json`)
+
+| Layer | Where | Notes |
+|-------|-------|-------|
+| Original Aniimo stats, elements, work/job levels, tiers, stage, role | `source_profile` | Read from game data (provenance `verified`) or entered by the user. Never rewritten by translation. |
+| Palworld stats, elements, work suitability | `translation` | Each value records `from` (source ids), `method` (rule id or `user`), `auto_value`, `overridden` |
+| Balancing preset + rules version | `translation.profile` | `faithful`, `vanilla_balanced` or `custom` |
+| Variant-specific differences | `variants.<shiny\|prismana>.profile_overrides` | `verified`/`user` provenance only; Normal is the base |
+| Spawn rarity | `variants.*.spawn_probability` | Rejected inside profile overrides |
+| Combat | `combat` | Rejected inside profile overrides |
+
+The vocabularies (element ids, stat ids, work categories, level ranges) come
+from **versioned game-system definitions** (`aniimo_pal/data/systems/*.toml`,
+`aniimo-pal systems`). Validation rejects anything not in the target
+vocabulary, so **unsupported element types are never invented**. A creature
+records the system id and version it used, so updated definitions or rules do
+not invalidate earlier imports. Supply confirmed definitions with
+`creature validate --source-system/--target-system`.
+
+### 10.2 Implemented now (milestone-2 scope)
+- Schema and validation for `source_profile`, `translation` and
+  `profile_overrides`. Every value carries provenance. Each source element must
+  be either mapped or listed in `translation.unmapped_elements`. Work levels
+  are checked against the target system's range. Rarity and combat keys are
+  rejected inside stat overrides.
+- `effective_profile(creature, variant)`: Normal = base; Shiny and Prismana
+  inherit it plus any verified/user overrides.
+- Warnings (non-fatal): unverified system definitions; translated stats without
+  any verified source stat; tiers with no documented meaning; rare variants
+  whose work suitability is all at the maximum level.
+- Discovery aid: the inventory records TextAsset size and content type (json,
+  csv, xml, text, binary). `aniimo-pal objects` searches the object index by
+  class and name, to find stat, element and work tables in real data.
+
+### 10.3 Translation engine (milestone 8, after real data is available)
+Planned approach, written down now so it stays explainable:
+- **Normalise** each source stat to a percentile within the source population
+  (all catalogued Aniimo at the same stage), so values are relative.
+- **Faithful:** map percentiles onto the target stat's distribution across
+  Palworld's species, using documented monotonic curves.
+- **Vanilla balanced:** match the creature to reference Pals with a similar
+  role and profile, and take their value bands.
+- **Custom:** user-editable curves and caps.
+- Elements: a versioned mapping table supporting one-to-one, many-to-one and
+  explicit "unmapped" entries, with gameplay-based (not visual) rationale per
+  entry. Visual colour is never evidence.
+- Work: Aniimo job categories map to Palworld work categories via a table.
+  Levels convert through a configurable table, only after the meaning of
+  Aniimo's levels is verified. Unrelated categories are never added.
+- Every output keeps `auto_value`, so the studio can reset to defaults after
+  manual edits.
+
+**None of these formulas are implemented.** Both games' systems must be
+confirmed from data first (see 10.4).
+
+### 10.4 Unknowns that need real game data
+- Where Aniimo stores species stats, elements and job data: TextAsset tables,
+  ScriptableObjects (MonoBehaviour) or server-side only. Use `objects --class
+  TextAsset/MonoBehaviour`.
+- Aniimo stat semantics and scaling with level/stage. Guides list HP, ATK, P.DEF,
+  M.DEF, BREAK and REGEN, and say progression changed after the beta.
+- **The meaning of "tiers 1–4" and the Prismana link.** Guides describe Homeland
+  *job levels* 1–4 (another lists stations at Lv 1–3). They also report that
+  Prismana forms **do not change stats** but often change element (and gain
+  Light). So "tier 4 = Prismana" is unconfirmed, and Prismana should differ
+  through verified element/skill overrides, not stat boosts.
+- The Aniimo job list: guides mention 13 jobs (nine element jobs + four general)
+  without consistent names.
+- Palworld work-level range for the target version: wiki.gg says natural 1–8
+  and maximum 10; other guides say 1–4. Also Palworld's internal stat fields
+  and how DataTable rows encode elements and work (inspect
+  `DT_PalMonsterParameter` with FModel or the modding kit).
+- Element gameplay: Aniimo uses 1.6×/0.625× multipliers with no immunities and
+  self-resistance; Palworld uses 2×/0.5× plus a 20 % same-element bonus. Wind
+  and Light have no Palworld element; Neutral and Dragon have no Aniimo
+  element.

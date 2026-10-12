@@ -102,6 +102,19 @@ a Palworld install):
   attack montages and notifies are authored. This is the first research spike of
   the combat milestone.
 
+## 2b. Stats, elements and work systems **[source: fan/community guides, unverified]**
+
+| Topic | Aniimo | Palworld |
+|-------|--------|----------|
+| Elements | 9: Fire, Water, Grass, Lightning (=Electric), Ice, Earth (=Rock), Wind, Light (=Holy), Dark; dual types exist | 9: Neutral, Fire, Water, Grass, Electric, Ice, Ground, Dark, Dragon; dual types exist |
+| Type multipliers | 1.6× / 1× / 0.625×; no immunities; an element resists itself | 2× / 0.5×; +20 % same-element skill bonus; non-Neutral elements are weak to themselves |
+| Stats | HP, ATK, P.DEF, M.DEF, BREAK, REGEN (+ total). Progression reportedly changed after the last beta | HP, Attack, Defense, Work Speed, etc. Internal field names unconfirmed |
+| Prismana | A rare form of a creature. Reportedly **no stat change**; often changes element (7 of 27 gain Light), habitat or skills | — |
+| Work | Homeland jobs: 13 (nine element jobs + four general). Job levels 1–4 per one guide; stations Lv 1–3 per another; Earth associated with mining | 12 work suitabilities: Kindling, Watering, Planting, Generating Electricity, Handiwork, Gathering, Lumbering, Mining, Medicine Production, Cooling, Transporting, Farming. Levels: wiki.gg natural 1–8, maximum 10; other guides 1–4 |
+
+These are encoded as `unverified` system definitions
+(`src/aniimo_pal/data/systems/`) for validation only.
+
 ## 3. Unreal Engine 5.1 import workflow
 
 `unreal.AssetImportTask` (UE 5.1) **[verified, Epic Python API docs]**:
@@ -133,6 +146,11 @@ Interchange/glTF importer plugins **[unverified]**, so Blender converts GLB to F
 - Blender is GPL. Our scripts run inside it as separate files.
 
 ## Sources
+- Aniimo elements: https://allthings.how/aniimo-type-chart-all-9-element-matchups-and-damage-multipliers/
+- Aniimo stats: https://thegameswiki.com/aniimo/wiki/aniimo-base-stats
+- Aniimo Prismana: https://aniimo.lin3.net/en/articles/prismana-pact-guide, https://aniimoeggs.com/guides/prismana-aniimo-elements-and-skills/
+- Aniimo Homeland work: https://aniimotools.dev/systems/homeland/stations/, https://www.hideoutgacha.com/games/aniimo/training-guide
+- Palworld elements: https://palworld.wiki.gg/wiki/Elements ; work suitability: https://palworld.wiki.gg/wiki/Work_suitability
 - Palworld skill tables (community): https://www.palmods.gg/docs/authors/game-ids/active-skills, https://www.nexusmods.com/palworld/mods/3807, https://www.nexusmods.com/palworld/mods/3808, https://palworld.wiki.gg/wiki/Partner_Skills
 - AssetRipper: https://github.com/AssetRipper/AssetRipper (source read at commit beeb50e)
 - UnityPy: https://github.com/K0lb3/UnityPy (`files/BundleFile.py`, `files/SerializedFile.py`, `enums/BundleFile.py`)

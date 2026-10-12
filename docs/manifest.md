@@ -92,8 +92,24 @@ and `warnings[]`. The `rules` used are embedded for reproducibility.
 0.2.0 adds (all optional, 0.1.x files remain valid): `prefabs`, `skeleton`,
 `notes`, `history`; per-asset `class`, `name`, `slot`, `provenance`
 (verified|inferred|user), `extracted`, `assetripper`; the `unclassified`
-asset variant (must be resolved before `mapped`); and the reserved `combat`
-section (see architecture.md §9). Status order:
+asset variant (must be resolved before `mapped`); the reserved `combat`
+section (see architecture.md §9); and `source_profile` / `translation` /
+`variants.*.profile_overrides` for stats, elements and work (architecture.md
+§10). Example:
+
+```jsonc
+"source_profile": {"system": {"id": "aniimo", "version": "0.1.0"},
+  "stats": {"hp": {"value": 80, "provenance": "verified", "source": "cab-x:12 m_Hp"}},
+  "elements": [{"id": "earth", "provenance": "verified"}, {"id": "wind", "provenance": "verified"}],
+  "work": [{"id": "earth_job", "level": 2, "provenance": "verified"}],
+  "tiers": {"job_level": {"value": 2, "meaning": null, "provenance": "verified"}}},
+"translation": {"target_system": {"id": "palworld", "version": "0.1.0"},
+  "profile": {"id": "faithful", "rules_version": null},
+  "stats": {"hp": {"value": 75, "auto_value": 75, "from": ["hp"], "method": "user", "overridden": true}},
+  "elements": [{"id": "ground", "from": ["earth"], "method": "user"}],
+  "unmapped_elements": ["wind"],
+  "work": [{"id": "mining", "level": 2, "from": ["earth_job"], "method": "user"}]}
+``` Status order:
 `draft → mapped → extracted → converted → configured → validated → exported`.
 `mapped` requires every non-rejected association to be confirmed.
 

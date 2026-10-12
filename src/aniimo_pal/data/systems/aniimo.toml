@@ -1,0 +1,50 @@
+# Aniimo game-system vocabulary used to validate creature source profiles.
+#
+# STATUS: UNVERIFIED. Compiled from fan/community guides (see `sources`), not from
+# game data. Replace with values confirmed from the user's own install (data tables
+# located with `aniimo-pal objects find`) and bump `version` when you do.
+# Old creature projects keep validating against the version they recorded.
+
+[system]
+id = "aniimo"
+version = "0.1.0"
+game_version = "unknown"
+status = "unverified"
+max_elements = 2   # guides report dual-element Aniimo
+sources = [
+  "https://allthings.how/aniimo-type-chart-all-9-element-matchups-and-damage-multipliers/",
+  "https://thegameswiki.com/aniimo/wiki/aniimo-base-stats",
+  "https://aniimotools.dev/systems/homeland/stations/",
+  "https://www.hideoutgacha.com/games/aniimo/training-guide",
+]
+
+# Canonical ids (lowercase) with display names and aliases seen in guides.
+[elements]
+fire = { name = "Fire" }
+water = { name = "Water" }
+grass = { name = "Grass" }
+lightning = { name = "Lightning", aliases = ["electric"] }
+ice = { name = "Ice" }
+earth = { name = "Earth", aliases = ["rock"] }
+wind = { name = "Wind" }
+light = { name = "Light", aliases = ["holy"] }
+dark = { name = "Dark" }
+
+# Six base stats reported by guides; the studio reportedly changed stat
+# progression after the last beta, so values must come from game data.
+[stats]
+hp = { name = "HP" }
+atk = { name = "ATK" }
+pdef = { name = "P.DEF", aliases = ["physical_defense"] }
+mdef = { name = "M.DEF", aliases = ["magic_defense"] }
+break = { name = "BREAK", aliases = ["brk"] }
+regen = { name = "REGEN" }
+
+# Homeland work: guides report 13 jobs (nine element jobs + four general jobs)
+# but do not name them consistently, so no ids are defined yet. Job levels are
+# reported as 1-4 by one guide and stations as Lv 1-3 by another.
+[work]
+categories = []
+level_min = 1
+level_max = 4
+level_status = "conflicting-sources"

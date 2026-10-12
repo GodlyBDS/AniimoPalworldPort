@@ -34,10 +34,10 @@ PARSE_CLASSES = {
     "GameObject", "Transform", "RectTransform", "MeshFilter", "MeshRenderer", "SkinnedMeshRenderer",
     "Material", "Texture2D", "Mesh", "AnimationClip", "Animator", "AnimatorController",
     "AnimatorOverrideController", "Avatar", "Animation", "AssetBundle", "Sprite", "MonoBehaviour",
-    "PrefabInstance", "Prefab",
+    "PrefabInstance", "Prefab", "TextAsset",
 }
 # Classes whose references are not walked (no useful PPtrs, large payloads).
-NO_REF_WALK = {"Texture2D", "Mesh", "AnimationClip", "Avatar", "AssetBundle"}
+NO_REF_WALK = {"Texture2D", "Mesh", "AnimationClip", "Avatar", "AssetBundle", "TextAsset"}
 
 
 class UnityPyUnavailable(ToolkitError):
@@ -134,9 +134,40 @@ def _class_info(cls: str, d: dict[str, Any]) -> dict[str, Any]:
         info["active"] = d.get("m_IsActive")
     elif cls in ("Transform", "RectTransform"):
         info.update(position=d.get("m_LocalPosition"), rotation=d.get("m_LocalRotation"), scale=d.get("m_LocalScale"))
+    elif cls == "TextAsset":
+        info.update(_text_asset_info(d.get("m_Script")))
     elif cls == "AssetBundle":
         info.update(bundle_name=d.get("m_AssetBundleName"), dependencies=list(d.get("m_Dependencies") or []))
     return info
+
+
+def _text_asset_info(script: Any) -> dict[str, Any]:
+    """Size and a coarse content guess for a TextAsset (data tables often live in these)."""
+    if isinstance(script, str):
+        raw = script.encode("utf-8", "surrogateescape")
+    elif isinstance(script, (bytes, bytearray)):
+        raw = bytes(script)
+    else:
+        return {"size": None, "content": "unknown"}
+    head = raw[:4096]
+    try:
+        text = head.decode("utf-8")
+        is_text = "\x00" not in text
+    except UnicodeDecodeError:
+        is_text = False
+    if not is_text:
+        content = "binary"
+    else:
+        stripped = text.lstrip("\ufeff \t\r\n")
+        if stripped.startswith(("{", "[")):
+            content = "json"
+        elif stripped.startswith("<"):
+            content = "xml"
+        elif "\n" in stripped and stripped.split("\n", 1)[0].count(",") >= 2:
+            content = "csv"
+        else:
+            content = "text"
+    return {"size": len(raw), "content": content}
 
 
 @dataclass
