@@ -263,6 +263,11 @@ def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str],
             parsed = qz.parse(data[QUANTIZED_SET])
         except (KeyError, ValueError) as exc:
             raise ClipNotDecodable(f"{QUANTIZED_SET}: layout not understood ({exc})", report) from exc
+        padding = parsed.get("block_padding") or {}
+        report["quantized_block_padding"] = padding
+        if padding.get("nonzero_bytes"):
+            raise ClipNotDecodable(f"{QUANTIZED_SET}: {padding['nonzero_bytes']} non-zero bytes after the samples of "
+                                   "the dynamic blocks; their meaning is unknown", report)
         found = qz.search(parsed, known, np.asarray(times), _rotation_rows(bindings, widths), total)
         best = found["best"]
         report["quantized_search"] = {k: found[k] for k in ("tried", "top", "runner_up_score")}
@@ -277,7 +282,8 @@ def decode_clip(d: dict[str, Any], hash_to_path: dict[int, str],
                                    report)
         matrix = best["matrix"]
         decoder["curves"]["quantized"] = quantized
-        decoder["quantized_reading"] = dict(best["reading"], score=round(best["score"], 4))
+        decoder["quantized_reading"] = dict(best["reading"], score=round(best["score"], 4),
+                                            block_padding_bytes=padding.get("bytes_per_block", 0))
         decoder["provenance"] = ("inferred: QuantizedClip layout derived from the data; reading chosen because "
                                  "every rotation evaluates to a unit quaternion")
     else:
@@ -387,7 +393,17 @@ def validate_clip(clip: dict[str, Any], rest: dict[str, dict[str, list[float]]] 
     out["rotation_steps"] = steps
     out["largest_rotation_step_deg"] = round(worst_jump, 2)
     out["most_moving_bones"] = [{"path": p, "max_rotation_deg": round(a, 1)} for a, p in sorted(motion)[::-1][:8]]
+    animator = [ft for ft in clip.get("float_tracks") or [] if int(ft.get("class_id") or 0) == 95]
+    if animator:  # Animator curves (root motion / muscle values): not applied to bones by this toolkit
+        out["animator_curves"] = [{"attribute": ft.get("attribute"), "custom_type": ft.get("custom_type"),
+                                   "first": round(ft["keys"][0]["v"][0], 5) if ft["keys"] else None,
+                                   "min": round(min(k["v"][0] for k in ft["keys"]), 5) if ft["keys"] else None,
+                                   "max": round(max(k["v"][0] for k in ft["keys"]), 5) if ft["keys"] else None}
+                                  for ft in animator[:32]]
     if rest:
+        pose = _pose_vs_rest(clip, rest)
+        if pose:
+            out["pose_vs_rest"] = pose
         ratios, scale_ok, scale_n, rot_ok, rot_n = [], 0, 0, 0, 0
         for t in tracks:
             r = rest.get(t["path"])
@@ -419,3 +435,56 @@ def validate_clip(clip: dict[str, Any], rest: dict[str, dict[str, list[float]]] 
         if rot_n:
             out["rotations_within_90_deg_of_rest_at_frame_0"] = f"{rot_ok}/{rot_n}"
     return out
+
+
+def _pose_vs_rest(clip: dict[str, Any], rest: dict[str, dict[str, list[float]]]) -> dict[str, Any] | None:
+    """How the whole animated skeleton is turned and moved against the rest pose (Unity model space).
+
+    Bone positions of the rest pose and of a frame are compared with a best-fit rotation (Kabsch): an angle near
+    90 deg about the up axis means the decoded animation itself turns the creature sideways relative to its rest
+    pose (the preview is then not the cause). Also lists the shallowest animated transforms against rest.
+    """
+    import numpy as np
+
+    from aniimo_pal.convert.skin_assembly import unity_world
+
+    by_path: dict[str, dict[str, Any]] = {}
+    for t in clip["tracks"]:
+        if t["path"] in rest:
+            by_path.setdefault(t["path"], {})[t["channel"]] = t
+    if len(rest) < 3 or not by_path:
+        return None
+    paths = sorted(rest)
+    rest_pos = np.array([unity_world(rest)[p][:3, 3] for p in paths])
+    n = len(clip["tracks"][0]["keys"])
+    report: dict[str, Any] = {"frames": []}
+    for f in sorted({0, n // 2, n - 1}):
+        local = {p: dict(v) for p, v in rest.items()}
+        for p, chans in by_path.items():
+            for ch, t in chans.items():
+                if ch in ("position", "rotation", "scale"):
+                    local[p][ch] = t["keys"][f]["v"]
+        world = unity_world(local)
+        pos = np.array([world[p][:3, 3] for p in paths])
+        a, b = rest_pos - rest_pos.mean(axis=0), pos - pos.mean(axis=0)
+        u, _s, vt = np.linalg.svd(b.T @ a)
+        d = np.sign(np.linalg.det(u @ vt))
+        r = u @ np.diag([1, 1, d]) @ vt
+        angle = float(np.degrees(np.arccos(np.clip((np.trace(r) - 1) / 2, -1.0, 1.0))))
+        axis = np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]])
+        axis = axis / (np.linalg.norm(axis) or 1.0)
+        report["frames"].append({"frame": f, "turn_deg": round(angle, 1), "axis_unity_xyz": [round(float(x), 2) for x in axis],
+                                 "shift_m": [round(float(x), 3) for x in pos.mean(axis=0) - rest_pos.mean(axis=0)]})
+    shallow = sorted(by_path, key=lambda p: (p.count("/"), p))[:4]
+    report["top_transforms"] = []
+    for p in shallow:
+        entry = {"path": p}
+        if "rotation" in by_path[p]:
+            q = np.array(by_path[p]["rotation"]["keys"][0]["v"], dtype=float)
+            q0 = np.array(rest[p]["rotation"], dtype=float)
+            entry["rotation_vs_rest_deg_frame0"] = round(float(np.degrees(2 * np.arccos(min(1.0, abs(float(q @ q0)))))), 1)
+        if "position" in by_path[p]:
+            entry["position_vs_rest_m_frame0"] = round(float(np.linalg.norm(
+                np.array(by_path[p]["position"]["keys"][0]["v"]) - np.array(rest[p]["position"]))), 4)
+        report["top_transforms"].append(entry)
+    return report

@@ -6,7 +6,7 @@ pytest.importorskip("UnityPy")
 
 from PIL import Image  # noqa: E402  (UnityPy dependency)
 
-from aniimo_pal.cli import EXIT_CHECK_FAILED, EXIT_OK, EXIT_USAGE, main  # noqa: E402
+from aniimo_pal.cli import EXIT_CHECK_FAILED, EXIT_INCOMPLETE, EXIT_OK, EXIT_USAGE, main  # noqa: E402
 from aniimo_pal.creature.model import CreatureError, creature_path, load_creature, save_creature, validate_creature  # noqa: E402
 from aniimo_pal.creature.workflow import creature_from_catalog, pending, set_associations  # noqa: E402
 from aniimo_pal.errors import ToolkitError, UnsafeOutputError  # noqa: E402
@@ -64,7 +64,10 @@ def test_associate_errors(pipeline):
 def test_extract_outputs(pipeline):
     c, path = _foxlet(pipeline)
     report = extract_creature(c, path.parent, pipeline["root"])
-    assert report["summary"] == {"ok": 15, "errors": 0, "skipped": 1}  # controller has no UnityPy export
+    s = report["summary"]
+    assert (s["ok"], s["errors"], s["skipped"]) == (15, 0, 1)  # controller has no UnityPy export
+    # The synthetic clips bind paths but carry no curves: exported as metadata, counted as not decoded.
+    assert s["animations_decoded"] == 0 and s["animations_not_decoded"] == 3 and s["by_role"]["material"] == 3
     assert c["status"] == "extracted"
     out = path.parent / "extract" / "unitypy"
     img = Image.open(out / "textures" / "normal" / "shiny" / "Foxlet_Shiny_Albedo.png")
@@ -123,7 +126,8 @@ def test_cli_end_to_end(creature_game, tmp_path, capsys):
     assert "Mossbun_Ult" in capsys.readouterr().out
     assert main(["creature", "associate", str(cfile), "--confirm-all"]) == EXIT_OK
     assert load_creature(cfile)["status"] == "mapped"
-    assert main(["creature", "extract", str(cfile), "--root", str(root)]) == EXIT_OK
+    # Exit 3: everything exported, but the (curve-less) synthetic clips could not be decoded.
+    assert main(["creature", "extract", str(cfile), "--root", str(root)]) == EXIT_INCOMPLETE
     assert (cfile.parent / "extract" / "unitypy" / "report.json").is_file()
     assert main(["creature", "validate", str(cfile)]) == EXIT_OK
     assert main(["creature", "init", str(ws), "--from-catalog", str(cat), "--species", "nope"]) == EXIT_USAGE

@@ -239,8 +239,11 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
             model["fbx"] = f"convert/{name}/{name}.fbx"
             model["blender"] = {k: report.get(k) for k in ("blender_version", "basis", "meshes", "armatures",
                                                            "bounds", "warnings")}
-            model["clips"] = [{k: c.get(k) for k in ("name", "frames", "bones_driven", "unknown_paths",
-                                                       "unmapped_paths", "max_head_error_m")} for c in report["clips"]]
+            checks = {c.get("name"): (c.get("decoder") or {}).get("validation") for c in clips}
+            model["clips"] = [dict({k: c.get(k) for k in ("name", "frames", "bones_driven", "unknown_paths",
+                                                            "unmapped_paths", "max_head_error_m")},
+                                   # Decoded-data checks (Unity space, before Blender): see muscle_clip.validate_clip.
+                                   validation=checks.get(c.get("name"))) for c in report["clips"]]
             for rec in outputs:
                 if rec["status"] == "ok":
                     rec["fbx"], rec["clips"] = model["fbx"], model["clips"]

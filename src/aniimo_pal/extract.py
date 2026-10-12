@@ -20,6 +20,7 @@ is read, so outputs always correspond to the confirmed source files.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -131,6 +132,10 @@ def extract_creature(creature: dict[str, Any], creature_dir: str | Path, game_ro
                     rec["error"] = f"role {a['role']!r} has no UnityPy export (handled by later stages)"
                 elif a["role"] == "texture":
                     texture_files[a["ref"]["object"]] = rec["file"]
+                elif a["role"] == "animation":
+                    meta = json.loads((out_root / rec["file"]).read_text(encoding="utf-8"))
+                    rec["clip_decoded"] = bool(meta.get("clip_file"))
+                    rec["decode_error"] = meta.get("decode_error")
             except Exception as exc:
                 rec["status"] = "error"
                 rec["error"] = f"{type(exc).__name__}: {exc}"[:400]
@@ -161,7 +166,12 @@ def extract_creature(creature: dict[str, Any], creature_dir: str | Path, game_ro
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "creature": creature["id"],
         "summary": {"ok": sum(1 for r in outputs if r["status"] == "ok"), "errors": errors,
-                    "skipped": sum(1 for r in outputs if r["status"] == "skipped")},
+                    "skipped": sum(1 for r in outputs if r["status"] == "skipped"),
+                    # Exported is not decoded: an animation's metadata can be written while its curves are not.
+                    "by_role": dict(Counter(r["role"] for r in outputs if r["status"] == "ok")),
+                    "animations_decoded": sum(1 for r in outputs if r.get("clip_decoded")),
+                    "animations_not_decoded": sum(1 for r in outputs if r.get("clip_decoded") is False),
+                    "decode_errors": dict(Counter(r["decode_error"] for r in outputs if r.get("decode_error")))},
         "outputs": outputs,
     }
     write_json_atomic(report, out_root / "report.json")

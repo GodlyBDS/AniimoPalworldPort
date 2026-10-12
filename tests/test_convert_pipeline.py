@@ -109,6 +109,15 @@ def test_convert_with_simulated_assetripper_outputs(skinned_game, tmp_path):
     assert [v["label"] for v in preview["variants"]] == ["Normal", "Shiny (look not identified)"]
     assert all(v["texture"] and Path(v["texture"]).is_file() for v in preview["variants"])
     assert [t["action"] for t in preview["timeline"]] == ["Foxlet_Wag"]
+    # The wagging tail and moving root are framed: animated bounds contain the rest bounds.
+    (rlo, rhi), (alo, ahi) = preview["rest_bounds"], preview["animated_bounds"]
+    assert all(a <= r for a, r in zip(alo, rlo, strict=True)) and all(a >= r for a, r in zip(ahi, rhi, strict=True))
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "aniimo_pal" / "convert" / "blender_scripts"))
+    from preview_scene import label_lines
+
+    assert label_lines("Shiny (look not identified) [NG_P_Parmon_10351_Shiny] - NO TEXTURE") == [
+        "Shiny (look not identified)", "[NG_P_Parmon_10351_Shiny]", "NO TEXTURE"]
     assert (cdir / "preview" / "preview.blend").is_file()
     assert preview["render"] is None and "Blender executable" in preview["render_error"]  # bpy module: no still
 

@@ -342,7 +342,20 @@ def cmd_creature_extract(args: argparse.Namespace, config: Config) -> int:
             is_fatal = roles.get(r["index"]) in ("mesh", "skeleton")
             fatal += is_fatal
             print(f"{'ERROR' if is_fatal else 'WARNING'} asset {r['index']} ({roles.get(r['index'])}): {r['error']}")
-    return EXIT_OK if s["ok"] and not fatal else EXIT_CHECK_FAILED
+    by_role = s.get("by_role") or {}
+    print("exported: " + (", ".join(f"{n} {role}" for role, n in sorted(by_role.items())) or "nothing"))
+    for role in ("material", "texture"):
+        if not by_role.get(role):
+            print(f"WARNING no {role} exported (the model will be untextured)")
+    anims = s.get("animations_decoded", 0) + s.get("animations_not_decoded", 0)
+    if anims:
+        print(f"animations decoded {s['animations_decoded']} of {anims}")
+        for reason, n in sorted((s.get("decode_errors") or {}).items(), key=lambda kv: -kv[1])[:5]:
+            print(f"  WARNING {n} x not decoded: {reason}")
+    if not s["ok"] or fatal:
+        return EXIT_CHECK_FAILED
+    incomplete = s.get("animations_not_decoded") or not by_role.get("material") or not by_role.get("texture")
+    return EXIT_INCOMPLETE if incomplete else EXIT_OK
 
 
 def cmd_creature_assetripper(args: argparse.Namespace, config: Config) -> int:
@@ -413,6 +426,14 @@ def cmd_creature_convert(args: argparse.Namespace, config: Config) -> int:
             print(f"    {n} x {reason}")
         for e in clip_errors[:8]:
             print(f"    e.g. {e['name']}")
+    turned = []
+    for c in (model.get("clips") or []):
+        frames = ((c.get("validation") or {}).get("pose_vs_rest") or {}).get("frames") or []
+        if frames and max(f["turn_deg"] for f in frames) > 45:
+            turned.append(f"{c['name']} {max(f['turn_deg'] for f in frames):.0f}deg")
+    if turned:
+        print(f"  NOTE {len(turned)} clip(s) turn the whole skeleton more than 45 deg against its rest pose in the "
+              f"decoded data (before Blender): {', '.join(turned[:6])}")
     comp = report["completeness"]
     print(f"geometry: {comp['geometry']['status']}"
           + (f" (missing: {', '.join(comp['geometry']['missing_parts'][:6])})" if comp["geometry"]["missing_parts"] else ""))
@@ -624,6 +645,14 @@ def cmd_probe_clip(args: argparse.Namespace, config: Config) -> int:
                 lines.append(f"{key}: {val[key]}")
         lines.append("most moving bones: " + ", ".join(f"{m['path'].rsplit('/', 1)[-1]} {m['max_rotation_deg']}deg"
                                                        for m in val["most_moving_bones"][:6]))
+        for f in (val.get("pose_vs_rest") or {}).get("frames", []):
+            lines.append(f"skeleton vs rest, frame {f['frame']}: turned {f['turn_deg']} deg about Unity axis "
+                         f"{f['axis_unity_xyz']}, shifted {f['shift_m']} m")
+        for t in (val.get("pose_vs_rest") or {}).get("top_transforms", []):
+            lines.append(f"  top transform {t}")
+        for a in val.get("animator_curves", [])[:16]:
+            lines.append(f"  Animator curve attribute {a['attribute']} (custom type {a['custom_type']}): first "
+                         f"{a['first']}, range {a['min']}..{a['max']} (not applied to bones)")
     for t in (rep["decoder"].get("quantized_search") or {}).get("top", [])[:3]:
         lines.append(f"  candidate reading (score {t['score']}): " + ", ".join(f"{k}={v}" for k, v in t.items()
                                                                             if k != "score"))

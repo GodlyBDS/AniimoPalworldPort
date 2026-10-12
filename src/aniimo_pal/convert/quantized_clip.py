@@ -52,11 +52,16 @@ def parse(qc: dict[str, Any]) -> dict[str, Any]:
            "static": np.frombuffer(data, dtype="<f4", count=ns, offset=s_off).astype(np.float64)}
     body = data[d_off:]
     layouts = {}
-    if frame_size == 8 + 2 * frames:  # per curve: two floats then one uint16 per frame
+    used = 8 + 2 * frames
+    if frame_size >= used and nd:
+        # Per curve: two floats then one uint16 per frame. m_FrameSize is the block stride; blocks may end with
+        # padding (seen: 2 zero bytes when 8 + 2 x frames is not a multiple of 4), which is skipped.
         blocks = np.frombuffer(body, dtype=np.uint8).reshape(nd, frame_size)
         ab = blocks[:, :8].copy().view("<f4").astype(np.float64)
-        q = blocks[:, 8:].copy().view("<u2").astype(np.float64)
+        q = blocks[:, 8:used].copy().view("<u2").astype(np.float64)
         layouts["per-curve block (a, b, samples)"] = (ab[:, 0], ab[:, 1], q)
+        pad = blocks[:, used:]
+        out["block_padding"] = {"bytes_per_block": frame_size - used, "nonzero_bytes": int(np.count_nonzero(pad))}
     if len(body) == nd * 8 + nd * frames * 2:  # all headers first, then samples
         ab = np.frombuffer(body, dtype="<f4", count=2 * nd).astype(np.float64).reshape(nd, 2)
         rest = np.frombuffer(body, dtype="<u2", offset=8 * nd).astype(np.float64)

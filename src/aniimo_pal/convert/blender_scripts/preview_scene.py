@@ -65,6 +65,32 @@ def bounds(objs):
     return lo, hi
 
 
+def label_lines(label: str) -> list[str]:
+    """'Shiny (look not identified) [NG_P_X_Shiny] - NO TEXTURE' -> one line per part."""
+    import re
+
+    return [x for x in re.split(r" - | (?=\[)", label) if x]
+
+
+def animated_bounds(arm, scene, lo: Vector, hi: Vector, samples: int = 160):
+    """Extend mesh bounds by where the bones go over the whole timeline (sampled)."""
+    first, last = scene.frame_start, scene.frame_end
+    if last <= first or arm.animation_data is None:
+        return lo, hi
+    lo, hi = lo.copy(), hi.copy()
+    rest_size = max((hi - lo).x, (hi - lo).y, (hi - lo).z, 0.1)
+    step = max(1, (last - first) // samples)
+    for f in range(first, last + 1, step):
+        scene.frame_set(f)
+        for pb in arm.pose.bones:
+            for p in (arm.matrix_world @ pb.head, arm.matrix_world @ pb.tail):
+                for i in range(3):
+                    lo[i], hi[i] = min(lo[i], p[i]), max(hi[i], p[i])
+    scene.frame_set(first)
+    pad = rest_size * 0.08  # skin reaches a little beyond the bones
+    return lo - Vector((pad, pad, pad)), hi + Vector((pad, pad, pad))
+
+
 def run(job: dict) -> dict:
     reset_scene()
     bpy.ops.import_scene.fbx(filepath=job["fbx"])
@@ -95,11 +121,16 @@ def run(job: dict) -> dict:
     scene.frame_start, scene.frame_end = 1, max(2, int(frame))
 
     lo, hi = bounds(meshes)
+    rest_lo, rest_hi = lo.copy(), hi.copy()
+    # Animations move and turn the creature (root motion, attacks): frame the space the skeleton covers over the
+    # whole timeline, not only the rest pose, so no variant leaves the picture or overlaps its neighbour.
+    lo, hi = animated_bounds(arm, scene, lo, hi)
     size = hi - lo
-    spacing = max(size.x, size.y, 0.5) * 1.6
+    spacing = max(size.x, size.y, 0.5) * 1.25
     variants = job.get("variants") or [{"label": "Normal", "texture": None}]
     placed = []
     holders = []
+    label_top = 0.0
     for i, var in enumerate(variants):
         mat = variant_material(var["label"], var.get("texture"))
         if i == 0:
@@ -135,8 +166,12 @@ def run(job: dict) -> dict:
             m.data.materials.append(variant_material(f"{var['label']}_{m.name}", tex) if tex else mat)
             used[m.data.name] = tex or var.get("texture")  # texture actually on this mesh in Blender (None: grey)
         curve = bpy.data.curves.new(f"Label_{var['label']}", "FONT")
-        curve.body = var["label"]
-        curve.size = max(size.z, 0.3) * 0.18
+        lines = label_lines(var["label"])
+        curve.body = "\n".join(lines)
+        # Fit the longest line into the variant's slot (default font: about 0.55 x size per character).
+        curve.size = min(max(size.z, 0.3) * 0.16, spacing * 0.92 / (0.55 * max(len(x) for x in lines)))
+        curve.align_y = "BOTTOM"  # extra lines grow upwards, away from the model
+        label_top = max(label_top, curve.size * 1.25 * len(lines))
         curve.align_x = "CENTER"
         text = bpy.data.objects.new(f"Label_{var['label']}", curve)
         scene.collection.objects.link(text)
@@ -147,7 +182,8 @@ def run(job: dict) -> dict:
 
     # Orthographic front camera framing every variant and its label.
     width = spacing * (len(variants) - 1) + max(size.x, size.y, 0.3)
-    height = (hi.z - lo.z) * 1.35 + 0.1
+    label_gap = size.z * 0.15 + 0.05
+    height = (hi.z - lo.z) + label_gap + label_top + 0.1
     center = Vector(((lo.x + hi.x) / 2 + spacing * (len(variants) - 1) / 2, (lo.y + hi.y) / 2,
                      lo.z + height / 2))
     cam_data = bpy.data.cameras.new("PreviewCamera")
@@ -178,6 +214,7 @@ def run(job: dict) -> dict:
     hot = next((t for t in timeline if any(k in t["action"].lower() for k in ("ult", "attack", "skill"))), None)
     render_frame = (hot or (timeline[0] if timeline else {"start": 1}))["start"] + 5
     report = {"schema": "aniimo-pal/preview-report", "blend": str(out), "variants": placed, "timeline": timeline,
+              "rest_bounds": [list(rest_lo), list(rest_hi)], "animated_bounds": [list(lo), list(hi)],
               "frame_end": scene.frame_end, "render_frame": render_frame, "render": None, "render_error": None,
               "blender_version": bpy.app.version_string}
     if job.get("report"):

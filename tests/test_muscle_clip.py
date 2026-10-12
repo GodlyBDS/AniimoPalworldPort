@@ -81,7 +81,7 @@ def _quat(axis, deg):
     return [a / n * math.sin(h) for a in axis] + [math.cos(h)]
 
 
-def _quantized_clip():
+def _quantized_clip(pad: int = 0, pad_byte: int = 0):
     """A clip shaped like Aniimo's: 3 rotations + 1 position; 4 constant curves, the rest quantized.
 
     Quantized layout as observed in a real clip: types | int32 indices | float32 statics | per dynamic curve
@@ -114,9 +114,11 @@ def _quantized_clip():
         lo, hi = min(rows[i]), max(rows[i])
         blob += struct.pack("<2f", lo, hi - lo)
         blob += struct.pack(f"<{frames}H", *[round((v - lo) / (hi - lo) * 65535) for v in rows[i]])
+        blob += bytes([pad_byte]) * pad  # block padding (real clips: 2 zero bytes when 8 + 2 x frames % 4 == 2)
     qc = {"m_FrameCount": frames, "m_CurveCount": len(order), "m_SampleRate": 30.0, "m_BeginTime": 0.0,
           "m_NumStatic": len(static_ids), "m_NumDynamic": len(dyn_ids), "m_TypeOffset": t_off,
-          "m_IndicesOffset": i_off, "m_StaticOffset": s_off, "m_FrameSize": 8 + 2 * frames, "m_DynamicOffset": d_off,
+          "m_IndicesOffset": i_off, "m_StaticOffset": s_off, "m_FrameSize": 8 + 2 * frames + pad,
+          "m_DynamicOffset": d_off,
           "m_Data": list(blob)}
     data = {"m_StreamedClip": {"data": [], "curveCount": 0},
             "m_DenseClip": {"m_FrameCount": 0, "m_CurveCount": 0, "m_SampleRate": 30.0, "m_BeginTime": 0.0,
@@ -177,3 +179,28 @@ def test_validation_reports_bone_names_continuity_and_rest_pose():
         "m_AvatarSkeletonPose": {"m_X": [{"t": {"x": 0, "y": 1, "z": 0}, "q": {"x": 0, "y": 0, "z": 0, "w": 1},
                                           "s": {"x": 1, "y": 1, "z": 1}}]}}})
     assert av["tos"] == [(crc("Root"), "Root")] and av["rest_by_hash"][crc("Root")]["position"] == [0, 1, 0]
+
+
+def test_quantized_blocks_with_padding_use_frame_size_as_stride():
+    d, rows = _quantized_clip(pad=2)  # like Ani_Parmon_10351_Attack02: 77 frames, m_FrameSize 164 = 162 + 2
+    clip = decode_clip(d, hash_lookup(["Root", "Root/Hips", "Root/Hips/Tail"]))
+    assert clip["decoder"]["quantized_reading"]["block_padding_bytes"] == 2
+    tail = next(t for t in clip["tracks"] if t["path"] == "Root/Hips/Tail")
+    assert tail["keys"][3]["v"] == pytest.approx([r[3] for r in rows[8:12]], abs=1e-4)
+    d, _rows = _quantized_clip(pad=2, pad_byte=7)  # unknown content after the samples: refused, not ignored
+    with pytest.raises(ClipNotDecodable, match="non-zero bytes"):
+        decode_clip(d, {})
+
+
+def test_pose_vs_rest_measures_a_turned_skeleton():
+    from aniimo_pal.convert.muscle_clip import validate_clip
+
+    rest = {"Root": {"position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            "Root/Head": {"position": [0, 0.5, 1.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            "Root/Tail": {"position": [0, 0.3, -1.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}}
+    turned = _quat([0, 1, 0], 90)  # the clip turns the root 90 deg about Unity's up axis
+    clip = {"tracks": [{"path": "Root", "channel": "rotation", "keys": [{"v": turned}, {"v": turned}]}]}
+    pose = validate_clip(clip, rest)["pose_vs_rest"]
+    assert pose["frames"][0]["turn_deg"] == pytest.approx(90.0, abs=0.5)
+    assert [abs(x) for x in pose["frames"][0]["axis_unity_xyz"]] == [0.0, 1.0, 0.0]
+    assert pose["top_transforms"][0] == {"path": "Root", "rotation_vs_rest_deg_frame0": 90.0}
