@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from aniimo_pal.adapters import AssetRipperAdapter, BlenderAdapter, all_adapters
@@ -24,6 +26,7 @@ def test_configured_path_found(tmp_path):
     assert status.available and status.location == str(exe)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="PATHEXT rules differ on Windows")
 def test_find_executable_on_path(tmp_path, monkeypatch):
     exe = tmp_path / "AssetRipper.GUI.Free"
     exe.write_text("#!/bin/sh\n")

@@ -1,5 +1,6 @@
 import os
 
+import pytest
 import synthetic
 
 from aniimo_pal.config import ScanConfig
@@ -127,6 +128,13 @@ def test_hidden_and_excluded(tmp_path):
     assert [f["path"] for f in m2["files"]] == [".git/config", ".hidden", "keep.txt"]
 
 
+def _symlink(src, dst):
+    try:
+        os.symlink(src, dst)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not permitted on this platform/user")
+
+
 def test_symlinks_not_followed_by_default(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -134,8 +142,8 @@ def test_symlinks_not_followed_by_default(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     (root / "real.txt").write_text("x")
-    os.symlink(outside, root / "linkdir")
-    os.symlink(outside / "secret.txt", root / "link.txt")
+    _symlink(outside, root / "linkdir")
+    _symlink(outside / "secret.txt", root / "link.txt")
     m = scan(root, ScanConfig())
     assert [f["path"] for f in m["files"]] == ["real.txt"]
     reasons = {s["path"]: s["reason"] for s in m["skipped"]}
@@ -148,7 +156,7 @@ def test_symlinks_not_followed_by_default(tmp_path):
 def test_symlink_loop_terminates(tmp_path):
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "f.txt").write_text("x")
-    os.symlink(tmp_path, tmp_path / "a" / "loop")
+    _symlink(tmp_path, tmp_path / "a" / "loop")
     m = scan(tmp_path, ScanConfig(follow_symlinks=True))
     assert "a/f.txt" in [f["path"] for f in m["files"]]
     assert any(s["reason"] == "symlink loop" for s in m["skipped"])
