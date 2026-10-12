@@ -3,14 +3,46 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import signal
 import subprocess
+import threading
+from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable
 
 from aniimo_pal.studio.layout import StudioLayout
 
 Log = Callable[[str], None]
+Progress = Callable[[int, int, str], None]
+
+# Progress lines printed by long CLI commands, e.g. "[120/2158] survey: x.bundle  (elapsed 1.0 min, ETA 9.2 min)".
+PROGRESS_LINE = re.compile(r"^\[(\d+)/(\d+)\] (.*)$")
+
+
+class StepStopped(Exception):
+    """The user stopped the running step."""
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Stop a step and every process it started (worker pools, AssetRipper, Blender)."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, check=False)
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)  # the step runs in its own session/process group
+        proc.wait(timeout=5)
+    except ProcessLookupError:
+        return
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 @dataclass(frozen=True)
@@ -75,11 +107,16 @@ def validate_game_folder(layout: StudioLayout, folder: str | Path) -> tuple[bool
 class StepRunner:
     """Builds and runs toolkit commands; every output path is inside the workspace."""
 
-    def __init__(self, layout: StudioLayout, game_folder: str, tools: dict[str, str]):
+    def __init__(self, layout: StudioLayout, game_folder: str, tools: dict[str, str],
+                 on_progress: Progress | None = None):
         self.layout = layout
         self.ws = Workspace(layout)
         self.game = str(game_folder)
         self.tools = tools
+        self.on_progress = on_progress
+        self.stopped = False
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
 
     def base(self) -> list[str]:
         return [str(self.layout.venv_python), "-m", "aniimo_pal", "--config", str(self.layout.toolkit_config)]
@@ -113,17 +150,43 @@ class StepRunner:
 
     # --- execution -------------------------------------------------------------------------
     def run(self, cmd: list[str], log: Log) -> int:
+        """Run one step, streaming its output; raises StepStopped if the user stopped it."""
         self.layout.ensure()
         self.ws.root.mkdir(parents=True, exist_ok=True)
         log("$ aniimo-pal " + " ".join(cmd[5:]))
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                env=self.layout.child_env(), cwd=self.ws.root, bufsize=1)
+        extra: dict[str, Any] = {"start_new_session": True} if os.name != "nt" else \
+            {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        with self._lock:
+            if self.stopped:
+                raise StepStopped()
+            proc = self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                                 encoding="utf-8", errors="replace", env=self.layout.child_env(),
+                                                 cwd=self.ws.root, bufsize=1, **extra)
         assert proc.stdout is not None
         for line in proc.stdout:
-            log(line.rstrip())
+            line = line.rstrip()
+            m = PROGRESS_LINE.match(line)
+            if m and self.on_progress:
+                self.on_progress(int(m.group(1)), int(m.group(2)), m.group(3))
+            log(line)
         code = proc.wait()
+        with self._lock:
+            self._proc = None
+        if self.stopped:
+            log("(stopped by user)")
+            raise StepStopped()
         log(f"(exit code {code})")
         return code
+
+    def stop(self) -> bool:
+        """Stop the running step (and its child processes). Returns False if nothing was running."""
+        with self._lock:
+            self.stopped = True
+            proc = self._proc
+        if proc is None:
+            return False
+        kill_tree(proc)
+        return True
 
     def run_all(self, cmds: list[list[str]], log: Log, allow_check_failure: bool = False) -> bool:
         for cmd in cmds:
@@ -131,6 +194,19 @@ class StepRunner:
             if code == 2 or (code == 1 and not allow_check_failure):
                 return False
         return True
+
+
+def unknown_files_breakdown(manifest: dict[str, Any], top: int = 8) -> dict[str, list[tuple[str, int]]]:
+    """Where the unrecognised high-entropy files are: by extension and by folder (two levels deep)."""
+    exts: Counter[str] = Counter()
+    folders: Counter[str] = Counter()
+    for f in manifest.get("files", []):
+        if f.get("kind") != "unknown_high_entropy":
+            continue
+        p = PurePosixPath(f["path"])
+        exts[p.suffix.lower() or "(no extension)"] += 1
+        folders["/".join(p.parts[:-1][:2]) or "(top level)"] += 1
+    return {"extensions": exts.most_common(top), "folders": folders.most_common(top)}
 
 
 def read_json(path: Path) -> dict | None:

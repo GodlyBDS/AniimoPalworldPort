@@ -18,9 +18,9 @@ def _species(catalog, key):
     return next(s for s in catalog["species"] if s["key"] == key)
 
 
-def _catalog_for(tmp_path, builder, rules=None):
+def _catalog_for(tmp_path, builder, rules=None, strategy="targeted"):
     (tmp_path / "x.bundle").write_bytes(ub.bundle(builder.build(), "CAB-x"))
-    return build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path), rules)
+    return build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path, strategy=strategy), rules)
 
 
 def test_species_and_variants(pipeline):
@@ -125,7 +125,8 @@ def test_static_props_ignored_by_default(tmp_path):
     ub.add_static_prop(b, "Rock")
     assert _catalog_for(tmp_path, b)["species"] == []
     (tmp_path / "x.bundle").unlink()
-    cat = _catalog_for(tmp_path, b, CatalogRules(include_static_meshes=True))
+    # Static props have no skinned mesh, so only a full inventory reads them.
+    cat = _catalog_for(tmp_path, b, CatalogRules(include_static_meshes=True), strategy="full")
     assert [s["key"] for s in cat["species"]] == ["rock"]
 
 

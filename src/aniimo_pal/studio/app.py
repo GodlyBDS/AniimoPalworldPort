@@ -27,6 +27,9 @@ TITLE = "Aniimo → Palworld Studio"
 OK, MISSING, WARN = "✔", "✖", "!"
 
 
+STOPPED = "stopped by user"
+
+
 def open_path(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     if sys.platform == "win32":
@@ -45,6 +48,8 @@ class StudioApp:
         self.settings = layout.load_settings()
         self.events: queue.Queue = queue.Queue()
         self.busy = False
+        self.current_task = ""
+        self.current_runner: steps.StepRunner | None = None
         self.action_buttons: list[ttk.Button] = []
         self.checks: list[setup.CheckResult] = []
         self.log_file = open(layout.logs / "studio.log", "a", encoding="utf-8")  # noqa: SIM115
@@ -76,6 +81,9 @@ class StudioApp:
         status.pack(fill="x")
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(status, textvariable=self.status_var).pack(side="left")
+        self.stop_button = ttk.Button(status, text="Stop", command=self.stop_task)
+        self.stop_button.pack(side="right", padx=(6, 0))
+        self.stop_button.state(["disabled"])
         self.progress = ttk.Progressbar(status, length=260, mode="determinate")
         self.progress.pack(side="right")
 
@@ -99,6 +107,10 @@ class StudioApp:
     def _progress(self, done: int, total: int | None) -> None:
         self.events.put(("progress", (done, total)))
 
+    def _count_progress(self, done: int, total: int, text: str) -> None:
+        """Thread-safe progress of a long step (e.g. '[120/2158] survey: ... ETA 9.2 min')."""
+        self.events.put(("count", (done, total, text)))
+
     def _drain_events(self) -> None:
         try:
             while True:
@@ -110,6 +122,15 @@ class StudioApp:
                     if total:
                         self.progress.configure(mode="determinate", maximum=total, value=done)
                         self.status_var.set(f"{self.current_task}: {done / 1024 ** 2:.0f} / {total / 1024 ** 2:.0f} MB")
+                elif kind == "count":
+                    done, total, text = payload
+                    if total:
+                        self.progress.stop()
+                        self.progress.configure(mode="determinate", maximum=total, value=done)
+                        eta = text.rsplit("ETA ", 1)[-1].rstrip(")") if "ETA " in text else ""
+                        stage = text.split(":", 1)[0]
+                        self.status_var.set(f"{self.current_task}: {stage} {done} / {total}"
+                                            + (f", about {eta} left" if eta and done < total else ""))
                 elif kind == "done":
                     callback, error = payload
                     self._task_finished(callback, error)
@@ -130,6 +151,7 @@ class StudioApp:
         self.current_task = title
         for b in self.action_buttons:
             b.state(["disabled"])
+        self.stop_button.state(["!disabled"])
         self.status_var.set(f"{title} ...")
         self.progress.configure(mode="indeterminate")
         self.progress.start(12)
@@ -139,6 +161,8 @@ class StudioApp:
             error = None
             try:
                 fn()
+            except steps.StepStopped:
+                error = STOPPED
             except Exception as exc:  # report every failure in the GUI
                 error = f"{type(exc).__name__}: {exc}"
                 self.log(traceback.format_exc().rstrip())
@@ -148,11 +172,17 @@ class StudioApp:
 
     def _task_finished(self, callback, error) -> None:
         self.busy = False
+        self.current_runner = None
+        self.stop_button.state(["disabled"])
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
         for b in self.action_buttons:
             b.state(["!disabled"])
-        if error:
+        if error == STOPPED:
+            self.status_var.set(f"{self.current_task}: stopped")
+            self.log("Stopped. Finished parts are kept; running the step again continues where it stopped.")
+            callback = None
+        elif error:
             self.status_var.set(f"{self.current_task} failed")
             self.log(f"FAILED: {error}")
             messagebox.showerror(TITLE, f"{self.current_task} failed:\n\n{error}\n\nSee the Log tab for details.")
@@ -161,6 +191,17 @@ class StudioApp:
         if callback:
             callback()
         self.refresh_gating()
+
+    def stop_task(self) -> None:
+        r = self.current_runner
+        if not self.busy:
+            return
+        if r is None:
+            messagebox.showinfo(TITLE, "This task cannot be stopped midway. Please wait for it to finish.")
+            return
+        self.status_var.set(f"{self.current_task}: stopping ...")
+        self.stop_button.state(["disabled"])
+        threading.Thread(target=r.stop, daemon=True).start()
 
     def save_settings(self) -> None:
         self.layout.save_settings(self.settings)
@@ -341,8 +382,12 @@ class StudioApp:
         return f
 
     def runner(self) -> steps.StepRunner:
-        return steps.StepRunner(self.layout, self.settings.get("game_folder", ""),
-                                setup.tool_paths(self.layout, self.settings))
+        """A runner for the next task; the Stop button stops whatever it is running."""
+        r = steps.StepRunner(self.layout, self.settings.get("game_folder", ""),
+                             setup.tool_paths(self.layout, self.settings), on_progress=self._count_progress)
+        if not self.busy:  # never replace the runner of a task that is still running
+            self.current_runner = r
+        return r
 
     def run_scan(self, which: tuple[str, ...]) -> None:
         r = self.runner()
@@ -368,12 +413,21 @@ class StudioApp:
                       f"Unity versions: {', '.join(s.get('unity_versions', {})) or 'unknown'}", ""]
             unknown = s["by_kind"].get("unknown_high_entropy", 0)
             if unknown:
-                lines.append(f"Note: {unknown} files are unrecognised high-entropy data (custom or protected formats).")
+                lines.append(f"Note: {unknown} files are unrecognised high-entropy data (custom or protected formats, "
+                             "or compressed data the scanner does not know). They are left alone.")
+                br = steps.unknown_files_breakdown(m)
+                lines.append("  by extension: " + ", ".join(f"{e} {n}" for e, n in br["extensions"]))
+                lines.append("  by folder:    " + ", ".join(f"{d} {n}" for d, n in br["folders"]))
+                lines.append("")
         o = steps.read_json(ws.objects)
         if o:
             so = o["summary"]
             lines.append(f"Unity objects listed: {so['object_count']} in {so['container_count']} containers "
                          f"({so['container_errors']} container errors)")
+            if "containers_deep_read" in so:
+                lines.append(f"  containers with creature meshes: {so['containers_with_skinned_meshes']}, read in "
+                             f"detail (incl. their dependencies): {so['containers_deep_read']}, "
+                             f"took {so['seconds'] / 60:.1f} min")
         c = steps.read_json(ws.catalog)
         if c:
             lines.append(f"Creatures found: {c['summary']['species_count']} (from {c['summary']['prefab_count']} prefabs)")
@@ -655,8 +709,11 @@ class StudioApp:
         return f
 
     def on_close(self) -> None:
-        if self.busy and not messagebox.askyesno(TITLE, "A task is still running. Quit anyway?"):
-            return
+        if self.busy:
+            if not messagebox.askyesno(TITLE, "A task is still running. Stop it and quit?"):
+                return
+            if self.current_runner:
+                self.current_runner.stop()
         self.log_file.close()
         self.tk.destroy()
 

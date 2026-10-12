@@ -409,19 +409,40 @@ def cmd_creature_preview(args: argparse.Namespace, config: Config) -> int:
 
 
 def cmd_inventory(args: argparse.Namespace, config: Config) -> int:
-    from aniimo_pal.inventory import build_inventory
+    import time
+
+    from aniimo_pal.inventory import build_inventory, default_workers
     from aniimo_pal.manifest.io import check_output_location, read_manifest, write_json_atomic
 
     out = Path(args.output)
     check_output_location(out, [Path(args.root)])
-    doc = build_inventory(read_manifest(args.manifest), args.root, include=args.include or (),
-                          verify_hashes=not args.no_verify)
-    write_json_atomic(doc, out, indent=config.manifest.indent)
+    cache = Path(args.cache) if args.cache else out.parent / "inventory-cache"
+    check_output_location(cache, [Path(args.root)])
+    workers = args.workers or default_workers()
+    started = time.monotonic()
+
+    def progress(done: int, total: int, rel: str) -> None:
+        elapsed = time.monotonic() - started
+        eta = elapsed / done * (total - done) if done else 0
+        print(f"[{done}/{total}] {rel}  (elapsed {elapsed / 60:.1f} min, ETA {eta / 60:.1f} min)", flush=True)
+
+    verify = "none" if args.no_verify else ("hash" if args.verify_hashes else "quick")
+    manifest = read_manifest(args.manifest)
+    print(f"Listing Unity objects with {workers} worker(s); finished containers are cached in {cache}", flush=True)
+    doc = build_inventory(manifest, args.root, include=args.include or (), verify=verify, workers=workers,
+                          cache_dir=cache, all_objects=args.all_objects, progress=progress,
+                          strategy="full" if args.full else "targeted")
+    write_json_atomic(doc, out, indent=0 if doc["summary"]["object_count"] > 100_000 else config.manifest.indent)
     s = doc["summary"]
-    print(f"containers {s['container_count']} (errors {s['container_errors']}, skipped {s['skipped_count']}), "
-          f"objects {s['object_count']} (errors {s['object_errors']}), unresolved refs {s['unresolved_refs']}")
+    print(f"containers {s['container_count']} (errors {s['container_errors']}, with skinned meshes "
+          f"{s['containers_with_skinned_meshes']}, deep-read {s['containers_deep_read']}, from cache "
+          f"{s['containers_from_cache']}, skipped {s['skipped_count']}), objects recorded {s['object_count']} "
+          f"(errors {s['object_errors']}), unresolved refs {s['unresolved_refs']}, {s['seconds'] / 60:.1f} min")
     for cls, n in sorted(s["by_class"].items(), key=lambda kv: (-kv[1], kv[0]))[:15]:
         print(f"  {cls:<28} {n}")
+    errors = [c for c in doc["containers"] if c["status"] != "ok"][:10]
+    for c in errors:
+        print(f"  ERROR {c['path']}: {c['error']}")
     print(f"objects:    {out}")
     return EXIT_OK
 
@@ -621,7 +642,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("root", help="the directory the manifest was scanned from")
     p.add_argument("-o", "--output", required=True, help="objects.json path (outside ROOT)")
     p.add_argument("--include", action="append", metavar="GLOB", help="only containers whose path matches")
-    p.add_argument("--no-verify", action="store_true", help="skip re-hashing files against the manifest")
+    p.add_argument("--no-verify", action="store_true", help="skip checking files against the manifest")
+    p.add_argument("--verify-hashes", action="store_true",
+                   help="re-hash every file (slow on large installs; default checks size + modification time)")
+    p.add_argument("--workers", type=int, help="parallel worker processes (default: CPU cores - 1, max 8)")
+    p.add_argument("--cache", help="per-container cache folder for resuming (default: next to the output)")
+    p.add_argument("--all-objects", action="store_true", help="record every object, not only relevant classes")
+    p.add_argument("--full", action="store_true",
+                   help="deep-read every container (slow); default reads only creature bundles and their dependencies")
     p.set_defaults(func=cmd_inventory)
 
     p = sub.add_parser("objects", help="search an object index (e.g. find stat/element/work data tables)")

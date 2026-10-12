@@ -47,7 +47,9 @@ pip install -e ".[unitypy]"
 # 1. Inventory the game install (read-only; outputs must be outside it)
 aniimo-pal scan "D:/Games/Aniimo" -o ws/manifests/aniimo.json --label "Aniimo 1.0"
 
-# 2. List every object inside the readable Unity containers (encrypted files are never opened)
+# 2. List the objects inside the readable Unity containers (encrypted files are never opened).
+#    Surveys every bundle, reads creature bundles (+ their dependencies) in detail, in parallel,
+#    with progress/ETA and a resume cache; --full reads everything
 aniimo-pal inventory ws/manifests/aniimo.json "D:/Games/Aniimo" -o ws/objects.json
 
 # 3. Build the creature catalog: species, Normal/Shiny/Prismana prefabs, mesh, materials,
@@ -74,7 +76,7 @@ aniimo-pal creature convert ws/creatures/aniimo_foxlet/creature.json --blender "
 | Command | Purpose |
 |---------|---------|
 | `scan`, `summary`, `validate`, `diff`, `verify`, `formats` | File inventory manifest; checks; game-update diffs |
-| `inventory` | Unity object index (`objects.json`) via UnityPy |
+| `inventory` | Unity object index (`objects.json`) via UnityPy; fast targeted mode, `--workers`, resumable cache |
 | `catalog build / list / show` | Creature catalog with automatic asset association |
 | `creature init / review / associate / validate / roll` | Resumable per-creature projects; exact wild/egg odds per regional form (`roll --biome`) |
 | `creature extract` | UnityPy export of confirmed assets (source hashes re-checked) |

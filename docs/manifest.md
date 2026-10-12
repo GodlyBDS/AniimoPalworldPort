@@ -57,9 +57,12 @@ Guarantees checked by `aniimo-pal validate`:
 - `unity_yaml`: `class_ids_in_probe` (Unity class ID → name and count).
 - `unity_meta`: `guid`. Textures: `width`/`height` (+ `fourcc`, `mip_count`, …). `model_fbx`: `encoding`, `fbx_version`.
 
-## Object index (`aniimo-pal/objects`, schema 0.1.0)
+## Object index (`aniimo-pal/objects`, schema 0.2.0)
 
-Produced by `aniimo-pal inventory`. One record per Unity object:
+Produced by `aniimo-pal inventory`. One record per Unity object that the
+creature pipeline uses (GameObject, Transform, renderers, Mesh, Material,
+Texture2D, Shader, AnimationClip, Animator/controllers, Avatar, MonoBehaviour,
+TextAsset, AssetBundle; `--all-objects` records every class):
 
 ```jsonc
 {"id": "cab-foxlet:47",            // <serialized-file name, lowercased>:<path id>
@@ -70,11 +73,31 @@ Produced by `aniimo-pal inventory`. One record per Unity object:
  "info": {"texture_slots": ["_MainTex", "_BumpMap"], "colors": {}, "floats": {}},
  "error": null}
 ```
-`info` per class: Texture2D size/format/streamed; Mesh vertex/submesh counts
-and bone-name hashes; AnimationClip binding path hashes, sample rate, length
-and **events**; Avatar bone paths; Transform local TRS. `containers[]` lists
-each opened file with its hash and serialized files (CAB names, externals).
+`info` per class: Texture2D size/format (`streamed` is `null` in the
+inventory: pixel data is not read); Mesh vertex/submesh counts and bone-name
+hashes; AnimationClip binding path hashes, sample rate, length and **events**;
+Avatar bone paths; Transform local TRS; TextAsset size and content kind.
+`containers[]` lists each file with its hash, serialized files (CAB names,
+externals), `class_counts` (every class, recorded or not) and `read`:
+`deep` (objects recorded), `survey` (table of contents only) or `none` (error).
 `skipped[]` lists encryption-flagged or unsupported files that were not opened.
+
+**Strategies.** `targeted` (default): every container is *surveyed* (type
+table, dependencies, asset paths and TextAssets, no object decoding); only
+containers holding a `SkinnedMeshRenderer`, plus the containers their objects
+reference (followed for up to 8 rounds), are read in detail. Surveyed
+containers contribute their TextAssets (data-table discovery) and class
+counts. `--full` reads every container in detail (needed for
+`include_static_meshes` catalogs). Texture pixels and mesh vertex buffers are
+never decoded during the inventory.
+
+**Speed and resume.** Files are checked against the manifest by size and
+modification time (`--verify-hashes` re-hashes, `--no-verify` skips the check).
+Containers are read by parallel worker processes (`--workers`, default CPU
+count − 1, at most 8), and each finished container is cached in
+`inventory-cache/` next to the output, keyed by its content hash. An
+interrupted or repeated run continues from the cache. Progress lines
+`[done/total] phase: file (elapsed, ETA)` are printed as it goes.
 
 ## Catalog (`aniimo-pal/catalog`, schema 0.1.0)
 

@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import tarfile
 import threading
@@ -228,6 +229,76 @@ def test_step_runner_streams_output(layout, monkeypatch):
     assert code == 0 and "cwd-ok" in lines and str(layout.tmp) in lines
 
 
+def test_step_runner_reports_progress_lines(layout):
+    seen = []
+    r = steps.StepRunner(layout, "/game", {}, on_progress=lambda d, t, m: seen.append((d, t, m)))
+    code = r.run([sys.executable, "-c", "print('[1/3] survey: a.bundle  (elapsed 0.0 min, ETA 0.1 min)'); print('done')",
+                  "x", "y", "z"], lambda _line: None)
+    assert code == 0 and seen == [(1, 3, "survey: a.bundle  (elapsed 0.0 min, ETA 0.1 min)")]
+
+
+def test_step_runner_stop_kills_the_whole_process_tree(layout, tmp_path):
+    import time
+
+    pidfile = tmp_path / "child.pid"
+    # The step starts a child process (like a worker pool or Blender) and both run "forever".
+    script = ("import subprocess, sys, time; "
+              "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+              f"open({str(pidfile)!r}, 'w').write(str(c.pid)); print('started', flush=True); time.sleep(60)")
+    r = steps.StepRunner(layout, "/game", {})
+    lines, outcome = [], {}
+
+    def job():
+        try:
+            r.run([sys.executable, "-c", script, "x", "y"], lines.append)
+        except steps.StepStopped:
+            outcome["stopped"] = True
+
+    t = threading.Thread(target=job)
+    t.start()
+    deadline = time.monotonic() + 20
+    while not pidfile.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert r.stop() is True
+    t.join(20)
+    assert not t.is_alive() and outcome == {"stopped": True} and "(stopped by user)" in lines
+    child = int(pidfile.read_text())
+    deadline = time.monotonic() + 10
+    while _alive(child) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _alive(child)
+    with pytest.raises(steps.StepStopped):  # a stopped runner starts nothing new
+        r.run([sys.executable, "-c", "print(1)", "x", "y"], lines.append)
+
+
+def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:  # a reaped-later zombie counts as gone
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().split(")")[-1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
+def test_unknown_files_breakdown():
+    manifest = {"files": [
+        {"path": "Data/Packs/a.pak", "kind": "unknown_high_entropy"},
+        {"path": "Data/Packs/b.pak", "kind": "unknown_high_entropy"},
+        {"path": "Data/Video/intro", "kind": "unknown_high_entropy"},
+        {"path": "c.bin", "kind": "unknown_high_entropy"},
+        {"path": "Data/x.bundle", "kind": "unity_bundle"},
+    ]}
+    br = steps.unknown_files_breakdown(manifest)
+    assert br["extensions"] == [(".pak", 2), ("(no extension)", 1), (".bin", 1)]
+    assert br["folders"] == [("Data/Packs", 2), ("Data/Video", 1), ("(top level)", 1)]
+
+
 def test_mods_information_is_complete():
     from aniimo_pal.studio import mods
 
@@ -291,5 +362,6 @@ def test_gui_smoke(layout):
         app.game_var.set(str(layout.root.parent))  # contains the Studio -> rejected
         app.accept_game()
         assert "game_folder" not in app.settings
+        assert app.stop_button.instate(["disabled"]) == (not app.busy)  # enabled only while a task runs
     finally:
         app.on_close()

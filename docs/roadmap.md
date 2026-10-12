@@ -52,6 +52,8 @@ animation events) without migrations.
 | Full chain scan → inventory → catalog → creature → extract → AssetRipper (primary + project) → convert | `tests/test_convert_pipeline.py` with `ASSETRIPPER_PATH` (real build) |
 | Stats/elements/work schema: vocabulary checks against system definitions, unmapped elements handled explicitly, work-level ranges, variant inheritance and overrides, rarity/combat kept out | `tests/test_profile.py` |
 | TextAsset description + `objects` search (data-table discovery) | `tests/test_inventory.py` |
+| Targeted inventory (survey all, deep-read creature bundles + dependency closure) gives the same creature objects as a full read; cache resume; parallel workers (spawn) agree; quick size/mtime check | `tests/test_inventory.py`; 420-bundle synthetic install: 2.4 s targeted vs 6.1 s full, cached re-run < 1 s |
+| Studio Stop button kills the step's whole process tree; progress lines drive the status bar | `tests/test_studio.py` (Linux; Windows `taskkill /T` path untested) |
 
 ## Not verified (no real files or tools available)
 
@@ -60,8 +62,12 @@ animation events) without migrations.
   heuristics are tuned on synthetic data only and will need rule adjustments.
 - Skinned-mesh fidelity through AssetRipper (the synthetic mesh has no
   weights), real animation curves, compressed or streamed textures (the
-  synthetic textures are uncompressed RGBA32), and very large installs
-  (performance).
+  synthetic textures are uncompressed RGBA32). Inventory time on a real
+  32 GB install with LZ4-compressed bundles (synthetic bundles are
+  uncompressed) is not measured yet.
+- Whether Aniimo's creatures actually use `SkinnedMeshRenderer` (the targeted
+  inventory's trigger). If a real install reports 0 containers with skinned
+  meshes, run the inventory with `--full` and share the class counts.
 - Blender conversion runs with the `bpy` module on synthetic data. A standalone
   Blender install and real Aniimo meshes are untested. Unreal import, cooking,
   packaging, UE4SS/PalSchema and in-game behaviour: **nothing has been run.**
@@ -107,5 +113,7 @@ Report:
 - `creature review` output for one creature;
 - whether its extracted PNGs, OBJ and AssetRipper GLBs look correct.
 
-A large install may take a long time to inventory. Try
-`--include "*creature*"`-style filters first.
+The inventory surveys every bundle and reads only bundles with creature meshes
+(plus what they reference) in detail, in parallel, with a resume cache. Its
+summary line ("containers ... with skinned meshes N, deep-read M") is the most
+useful thing to share.

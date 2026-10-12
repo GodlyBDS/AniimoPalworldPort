@@ -39,7 +39,11 @@ that overlaps its own data folder.
 1. **Setup:** status of every requirement, with one-click install.
 2. **Game folder:** select the Aniimo install (read-only).
 3. **Scan & catalog:** file inventory → Unity object list → creature
-   catalog, with a summary (Unity versions, encrypted/unknown files).
+   catalog, with a summary (Unity versions, encrypted files, and where the
+   unrecognised files are, by extension and folder). The Unity object list
+   surveys every bundle quickly and reads only the bundles with creature
+   meshes (plus what they use) in detail, in parallel; the status bar shows
+   progress and the estimated time left.
 4. **Creatures:**
    - pick a creature → *Create project* → review assets (confirm/reject
      proposals);
@@ -56,6 +60,11 @@ that overlaps its own data folder.
    modding kit and Unreal Engine 5.1. Information only: the Studio never
    changes your Palworld installation.
 6. **Log:** everything the tools printed (also saved in `studio-data/logs/`).
+
+The **Stop** button (bottom right) stops the running step together with every
+program it started (worker processes, AssetRipper, Blender). Finished work is
+kept: the object list caches each finished bundle, so running the step again
+continues where it stopped.
 
 ## What has been tested
 

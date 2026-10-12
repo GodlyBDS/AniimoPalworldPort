@@ -22,7 +22,7 @@ def test_inventory_lists_objects_and_resolves_refs(pipeline):
     assert fox["container"] == "StreamingAssets/foxlet.bundle"
     assert fox["id"].startswith("cab-foxlet:")
     tex = next(o for o in idx.by_class["Texture2D"] if o["name"] == "Foxlet_Albedo")
-    assert tex["info"] == {"width": 4, "height": 4, "format": 4, "mip_count": 1, "streamed": False}
+    assert tex["info"] == {"width": 4, "height": 4, "format": 4, "mip_count": 1, "streamed": None}
     avatar = idx.by_class["Avatar"][0]
     assert "Root/Hips/Spine/Head" in avatar["info"]["bone_paths"]
 
@@ -113,3 +113,86 @@ def test_text_assets_described_and_searchable(tmp_path, capsys):
     assert sorted(o["name"] for o in json.loads(capsys.readouterr().out)) == ["ElementConfig", "MonsterStatTable",
                                                                             "WorkBlob"]
     assert main(["objects", str(objs), "--name", "("]) == 2
+
+
+def _three_bundle_game(tmp_path):
+    """A creature bundle using a texture from a shared bundle, plus an unrelated bundle."""
+    root = tmp_path / "game"
+    root.mkdir()
+    shared = ub.SerializedBuilder()
+    noise = ub.add_texture(shared, "Shared_Noise")
+    (root / "shared.bundle").write_bytes(ub.bundle(shared.build(), "CAB-shared"))
+    b = ub.SerializedBuilder(externals=["archive:/CAB-shared/CAB-shared"])
+    ub.add_creature(b, "Glimmer", bones=ub.DEFAULT_BONES, clips=["Idle"],
+                    extra_textures={"_NoiseTex": ub.pptr(noise, file_id=1)})
+    (root / "glimmer.bundle").write_bytes(ub.bundle(b.build(), "CAB-glimmer"))
+    other = ub.SerializedBuilder()
+    ub.add_texture(other, "Ui_Icon")
+    other.add(49, m_Name="MonsterStatTable", m_Script="id,hp,atk\n1,80,101\n")
+    (root / "ui.bundle").write_bytes(ub.bundle(other.build(), "CAB-ui"))
+    return root
+
+
+def test_targeted_reads_creatures_and_their_dependencies_only(tmp_path):
+    root = _three_bundle_game(tmp_path)
+    doc = build_inventory(scan(root, ScanConfig()), root)
+    read = {c["path"]: c["read"] for c in doc["containers"]}
+    assert read == {"glimmer.bundle": "deep", "shared.bundle": "deep", "ui.bundle": "survey"}
+    s = doc["summary"]
+    assert s["containers_deep_read"] == 2 and s["containers_with_skinned_meshes"] == 1
+    assert s["dependency_rounds"] == 2 and s["unresolved_refs"] == 0
+    names = {o["name"] for o in doc["objects"]}
+    assert "Shared_Noise" in names and "Ui_Icon" not in names
+    # Survey-only containers still list their data tables, and counts cover every class.
+    table = next(o for o in doc["objects"] if o["name"] == "MonsterStatTable")
+    assert table["info"] == {"size": 19, "content": "csv"} and table["container"] == "ui.bundle"
+    assert s["all_classes_seen"]["Texture2D"] > s["by_class"]["Texture2D"]  # Ui_Icon counted, not listed
+
+
+def test_targeted_matches_full_for_creature_objects(tmp_path):
+    root = _three_bundle_game(tmp_path)
+    manifest = scan(root, ScanConfig())
+    targeted = build_inventory(manifest, root)
+    full = build_inventory(manifest, root, strategy="full")
+    keep = {"glimmer.bundle", "shared.bundle"}
+    strip = ("container",)
+
+    def objs(doc):
+        return sorted(({k: v for k, v in o.items() if k not in strip} for o in doc["objects"] if o["container"] in keep),
+                      key=lambda o: o["id"])
+
+    assert objs(targeted) == objs(full)
+    assert full["summary"]["containers_deep_read"] == 3
+
+
+def test_cache_resumes_and_parallel_workers_agree(tmp_path):
+    root = _three_bundle_game(tmp_path)
+    manifest = scan(root, ScanConfig())
+    cache = tmp_path / "cache"
+    seen = []
+    first = build_inventory(manifest, root, cache_dir=cache, progress=lambda d, t, m: seen.append((d, t, m)))
+    assert first["summary"]["containers_from_cache"] == 0 and seen and seen[-1][0] == seen[-1][1]
+    assert any(p.name.startswith("survey-") for p in cache.iterdir())
+    again = build_inventory(manifest, root, cache_dir=cache)
+    assert again["summary"]["containers_from_cache"] == 3
+    parallel = build_inventory(manifest, root, workers=2)
+    for doc in (again, parallel):
+        assert doc["objects"] == first["objects"]
+
+
+def test_quick_verify_catches_size_change_and_hash_mode_catches_edits(tmp_path):
+    import os
+
+    root = _three_bundle_game(tmp_path)
+    manifest = scan(root, ScanConfig())
+    target = root / "ui.bundle"
+    data = bytearray(target.read_bytes())
+    stat = target.stat()
+    data[-1] ^= 0xFF  # same size, same mtime: only a full hash notices
+    target.write_bytes(bytes(data))
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert build_inventory(manifest, root)["summary"]["container_errors"] == 0
+    assert build_inventory(manifest, root, verify="hash")["summary"]["container_errors"] == 1
+    target.write_bytes(bytes(data) + b"x")
+    bad = next(c for c in build_inventory(manifest, root)["containers"] if c["path"] == "ui.bundle")
+    assert bad["status"] == "error" and "re-scan" in bad["error"]

@@ -38,6 +38,29 @@ PARSE_CLASSES = {
 }
 # Classes whose references are not walked (no useful PPtrs, large payloads).
 NO_REF_WALK = {"Texture2D", "Mesh", "AnimationClip", "Avatar", "AssetBundle", "TextAsset"}
+# Default inventory records only classes the catalog/discovery use; everything else is just counted.
+RELEVANT_CLASSES = (PARSE_CLASSES - {"RectTransform", "PrefabInstance", "Prefab"}) | {"Shader"}
+# Read these classes only up to (not including) the named field: skips pixel / vertex payloads.
+TRUNCATE_AT = {"Texture2D": "image data", "Mesh": "m_BonesAABB"}
+# MonoBehaviours are numerous and usually need script type trees; only their names are recorded.
+PEEK_ONLY = {"MonoBehaviour"}
+_NODE_KEYS = ("m_Level", "m_Type", "m_Name", "m_ByteSize", "m_Version", "m_TypeFlags", "m_VariableCount",
+              "m_Index", "m_MetaFlag", "m_RefTypeHash")
+
+
+def _truncated_node(node, stop_field: str, cache: dict):
+    """A copy of a type-tree node with children up to ``stop_field`` (None if the field is absent)."""
+    key = (id(node), stop_field)
+    if key not in cache:
+        from UnityPy.helpers.TypeTreeNode import TypeTreeNode
+
+        names = [c.m_Name for c in node.m_Children]
+        if stop_field not in names:
+            cache[key] = None
+        else:
+            cache[key] = TypeTreeNode(m_Children=list(node.m_Children[:names.index(stop_field)]),
+                                      **{k: getattr(node, k) for k in _NODE_KEYS})
+    return cache[key]
 
 
 class UnityPyUnavailable(ToolkitError):
@@ -105,7 +128,8 @@ def _class_info(cls: str, d: dict[str, Any]) -> dict[str, Any]:
     if cls == "Texture2D":
         stream = d.get("m_StreamData") or {}
         info.update(width=d.get("m_Width"), height=d.get("m_Height"), format=d.get("m_TextureFormat"),
-                    mip_count=d.get("m_MipCount"), streamed=bool(stream.get("path")))
+                    mip_count=d.get("m_MipCount"),
+                    streamed=bool(stream.get("path")) if "m_StreamData" in d else None)
     elif cls == "Mesh":
         vdata = d.get("m_VertexData") or {}
         info.update(vertex_count=vdata.get("m_VertexCount"), submesh_count=len(d.get("m_SubMeshes") or []),
@@ -214,26 +238,75 @@ class UnityPyAdapter(ToolAdapter):
 
     # -- inventory -----------------------------------------------------------
 
-    def inventory_file(self, path: str | Path) -> list[SerializedInventory]:
-        """Inventory every SerializedFile inside ``path`` (bundle or .assets)."""
+    def inventory_file(self, path: str | Path, *, all_objects: bool = False,
+                       class_counts: dict[str, int] | None = None) -> list[SerializedInventory]:
+        """Inventory the SerializedFiles inside ``path`` (bundle or .assets).
+
+        By default only classes the catalog and data discovery use are recorded
+        (``RELEVANT_CLASSES``); every object is still counted in ``class_counts``.
+        """
         env = self.load(path)
         results = []
+        node_cache: dict = {}
         for sf in self.serialized_files(env):
             cab = cab_key(sf.name)
             externals = [cab_key(e.path) for e in sf.externals]
             inv = SerializedInventory(cab=cab, unity_version=str(sf.unity_version), externals=externals)
             for obj in sf.objects.values():
-                inv.objects.append(self._object_record(obj, cab, externals))
+                try:
+                    cls = obj.type.name
+                except Exception:  # unknown class id
+                    cls = f"Class{obj.class_id}"
+                if class_counts is not None:
+                    class_counts[cls] = class_counts.get(cls, 0) + 1
+                if all_objects or cls in RELEVANT_CLASSES:
+                    inv.objects.append(self._object_record(obj, cab, externals, cls, node_cache, all_objects))
             inv.objects.sort(key=lambda o: o["path_id"])
             results.append(inv)
         return results
 
+    def survey_file(self, path: str | Path) -> dict[str, Any]:
+        """Fast table of contents of a container: object classes, dependencies and asset paths.
+
+        Objects are not decoded (only the type table is read), except the
+        AssetBundle object for its asset paths and TextAssets (name, size and
+        content kind, used to locate data tables).
+        """
+        env = self.load(path)
+        files, counts, asset_paths, text_assets = [], {}, [], []
+        for sf in self.serialized_files(env):
+            externals = [cab_key(e.path) for e in sf.externals]
+            files.append({"cab": cab_key(sf.name), "unity_version": str(sf.unity_version), "externals": externals,
+                          "object_count": len(sf.objects)})
+            for obj in sf.objects.values():
+                try:
+                    cls = obj.type.name
+                except Exception:
+                    cls = f"Class{obj.class_id}"
+                counts[cls] = counts.get(cls, 0) + 1
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        if cls == "AssetBundle":
+                            d = obj.parse_as_dict(check_read=False)
+                            asset_paths += [str(entry[0]) for entry in d.get("m_Container") or []]
+                        elif cls == "TextAsset" and len(text_assets) < 5000:
+                            d = obj.parse_as_dict(check_read=False)
+                            text_assets.append([cab_key(sf.name), obj.path_id, d.get("m_Name") or None,
+                                                _text_asset_info(d.get("m_Script"))])
+                except Exception:
+                    pass
+        return {"serialized_files": files, "class_counts": counts, "asset_paths": sorted(set(asset_paths))[:20000],
+                "text_assets": [t for t in text_assets if t[2]]}
+
     @staticmethod
-    def _object_record(obj, cab: str, externals: list[str]) -> dict[str, Any]:
-        try:
-            cls = obj.type.name
-        except Exception:  # unknown class id
-            cls = f"Class{obj.class_id}"
+    def _object_record(obj, cab: str, externals: list[str], cls: str | None = None, node_cache: dict | None = None,
+                       full: bool = False) -> dict[str, Any]:
+        if cls is None:
+            try:
+                cls = obj.type.name
+            except Exception:  # unknown class id
+                cls = f"Class{obj.class_id}"
         rec: dict[str, Any] = {"id": object_id(cab, obj.path_id), "cab": cab, "path_id": obj.path_id,
                                "class": cls, "class_id": obj.class_id, "name": None, "asset_path": None,
                                "refs": [], "info": {}, "error": None}
@@ -244,8 +317,12 @@ class UnityPyAdapter(ToolAdapter):
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                if cls in PARSE_CLASSES:
-                    d = obj.parse_as_dict(check_read=False)
+                if cls in PARSE_CLASSES and (full or cls not in PEEK_ONLY):
+                    node = None
+                    if cls in TRUNCATE_AT and node_cache is not None:
+                        node = _truncated_node(obj._get_typetree_node(), TRUNCATE_AT[cls], node_cache)
+                    d = obj.parse_as_dict(node, check_read=False) if node is not None else \
+                        obj.parse_as_dict(check_read=False)
                     rec["name"] = d.get("m_Name") or None
                     rec["info"] = _class_info(cls, d)
                     if cls == "MonoBehaviour" and isinstance(d.get("m_Script"), dict):
