@@ -48,6 +48,7 @@ class CatalogRules:
     include_static_meshes: bool = False
     min_binding_matches: int = 3
     min_binding_ratio: float = 0.8
+    max_binding_match_species: int = 3
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

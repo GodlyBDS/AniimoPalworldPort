@@ -252,8 +252,16 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
     used_keys: set[str] = set()
     for members in sorted(groups.values(), key=lambda ms: candidates[ms[0]]["root"]["id"]):
         species_list.append(_species(idx, rules, [candidates[i] for i in members],
-                                     sorted({e for i in members for e in group_evidence[i]}),
-                                     orphan_clips, used_keys))
+                                     sorted({e for i in members for e in group_evidence[i]}), used_keys))
+    ambiguous = _link_clips_by_binding(idx, rules, species_list, orphan_clips)
+    for s in species_list:
+        del s["_skel_hashes"]
+        anims = s["animations"]
+        anims.sort(key=lambda a: (a["name"] or "", a["object"]))
+        for a in anims:
+            if a["binding_overlap"][1] and a["binding_overlap"][0] < a["binding_overlap"][1]:
+                s["warnings"].append(f"clip {a['name']!r} animates {a['binding_overlap'][1] - a['binding_overlap'][0]} "
+                                     "paths not present in the skeleton")
 
     claimed = {a["object"] for s in species_list for a in s["animations"]}
     return {
@@ -268,6 +276,7 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
             "species_count": len(species_list),
             "prefab_count": len(candidates),
             "unassigned_clip_count": sum(1 for c in idx.by_class.get("AnimationClip", []) if c["id"] not in claimed),
+            "ambiguous_clip_count": ambiguous,
             "diagnostics": _diagnostics(idx, h, roots, rules),
         },
         "species": species_list,
@@ -304,8 +313,53 @@ def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], r
     }
 
 
+def _link_clips_by_binding(idx: ObjectIndex, rules: CatalogRules, species_list: list[dict[str, Any]],
+                           orphan_clips: list[dict[str, Any]]) -> int:
+    """Associate unlinked clips with species whose skeleton contains the paths the clip animates.
+
+    Clips are grouped by their exact set of bound paths and indexed once (bone hash -> clip groups), so
+    the cost grows with distinct rigs, not with species x clips. A clip that fits more than
+    ``rules.max_binding_match_species`` species is left unassigned. Returns the number of such clips.
+    """
+    groups: dict[frozenset[int], list[dict[str, Any]]] = defaultdict(list)
+    for clip in orphan_clips:
+        hashes = frozenset((clip.get("info") or {}).get("binding_path_hashes") or [])
+        if len(hashes) >= rules.min_binding_matches:
+            groups[hashes].append(clip)
+    signatures = list(groups)
+    by_hash: dict[int, list[int]] = defaultdict(list)
+    for i, sig in enumerate(signatures):
+        for h in sig:
+            by_hash[h].append(i)
+    cache: dict[frozenset[int], list[int]] = {}
+    matches: dict[int, list[int]] = defaultdict(list)  # signature index -> species indices
+    for si, s in enumerate(species_list):
+        skel = s["_skel_hashes"]
+        if skel not in cache:
+            counts: dict[int, int] = defaultdict(int)
+            for h in skel:
+                for i in by_hash.get(h, ()):
+                    counts[i] += 1
+            cache[skel] = [i for i, n in counts.items()
+                           if n >= rules.min_binding_matches and n / len(signatures[i]) >= rules.min_binding_ratio]
+        for i in cache[skel]:
+            matches[i].append(si)
+    ambiguous = 0
+    for i, species_idx in matches.items():
+        if len(species_idx) > rules.max_binding_match_species:
+            ambiguous += len(groups[signatures[i]])
+            continue
+        for si in species_idx:
+            s = species_list[si]
+            have = {a["object"] for a in s["animations"]}
+            for clip in groups[signatures[i]]:
+                if clip["id"] not in have:
+                    s["animations"].append(_anim_entry(idx, clip, rules, s["_skel_hashes"], "binding-match", "inferred"))
+    return ambiguous
+
+
 def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]], group_evidence: list[str],
-             orphan_clips: list[dict[str, Any]], used_keys: set[str]) -> dict[str, Any]:
+             used_keys: set[str]) -> dict[str, Any]:
     warnings: list[str] = []
     # --- identity classification (form and Shiny detected independently) -----
     prismana_words = {"prismana": rules.variant_keywords.get("prismana", [])}
@@ -428,23 +482,15 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
     for p in prefabs:
         if p is not base and p["_cand"]["bone_paths"] != base_cand["bone_paths"]:
             warnings.append(f"prefab {p['name']!r} is skinned to different bones than {base['name']!r}")
-    skel_hashes = {path_hash(p) for p in skel_paths}
+    skel_hashes = frozenset(path_hash(p) for p in skel_paths)
 
     # --- animations ------------------------------------------------------------
     animations: dict[str, dict[str, Any]] = {}
     for p in prefabs:
         for clip in p["_cand"]["clips"]:
             animations.setdefault(clip["id"], _anim_entry(idx, clip, rules, skel_hashes, "controller", "verified"))
-    for clip in orphan_clips:
-        hashes = set((clip.get("info") or {}).get("binding_path_hashes") or [])
-        matched = len(hashes & skel_hashes)
-        if hashes and matched >= rules.min_binding_matches and matched / len(hashes) >= rules.min_binding_ratio:
-            animations.setdefault(clip["id"], _anim_entry(idx, clip, rules, skel_hashes, "binding-match", "inferred"))
-    anim_list = sorted(animations.values(), key=lambda a: (a["name"] or "", a["object"]))
-    for a in anim_list:
-        if a["binding_overlap"][1] and a["binding_overlap"][0] < a["binding_overlap"][1]:
-            warnings.append(f"clip {a['name']!r} animates {a['binding_overlap'][1] - a['binding_overlap'][0]} "
-                            "paths not present in the skeleton")
+    # Clips linked only by binding match are added later (_link_clips_by_binding), across all species.
+    anim_list = list(animations.values())
 
     for p in prefabs:
         p.pop("_cand")
@@ -458,6 +504,7 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
         "assets": asset_list,
         "animations": anim_list,
         "warnings": warnings,
+        "_skel_hashes": skel_hashes,
     }
 
 

@@ -182,3 +182,17 @@ def test_diagnostics_explain_missing_meshes(tmp_path):
     d = cat["summary"]["diagnostics"]
     assert cat["species"] == [] and d["renderers_with_mesh"] == 0
     assert d["missing_mesh_files"] == [{"cab": "cab-x", "count": 1, "container": "x.bundle"}]
+
+
+def test_clip_fitting_many_skeletons_is_ambiguous_not_attached_everywhere(tmp_path):
+    b = ub.SerializedBuilder()
+    for name in ("Alpha", "Bravo", "Charlie", "Delta"):  # four species on one shared rig
+        ub.add_creature(b, name, bones=ub.DEFAULT_BONES, clips=[], with_controller=False)
+    ub.add_clip(b, "Shared_Run", ub.DEFAULT_BONES)
+    cat = _catalog_for(tmp_path, b)
+    assert len(cat["species"]) == 4 and cat["summary"]["ambiguous_clip_count"] == 1
+    assert all(s["animations"] == [] for s in cat["species"])
+    (tmp_path / "x.bundle").unlink()
+    cat = _catalog_for(tmp_path, b, CatalogRules(max_binding_match_species=4))
+    assert cat["summary"]["ambiguous_clip_count"] == 0
+    assert all([a["name"] for a in s["animations"]] == ["Shared_Run"] for s in cat["species"])

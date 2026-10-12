@@ -53,6 +53,8 @@ animation events) without migrations.
 | Stats/elements/work schema: vocabulary checks against system definitions, unmapped elements handled explicitly, work-level ranges, variant inheritance and overrides, rarity/combat kept out | `tests/test_profile.py` |
 | TextAsset description + `objects` search (data-table discovery) | `tests/test_inventory.py` |
 | Targeted inventory (survey all, deep-read creature bundles + dependency closure) gives the same creature objects as a full read; cache resume; parallel workers (spawn) agree; quick size/mtime check | `tests/test_inventory.py`; 420-bundle synthetic install: 2.4 s targeted vs 6.1 s full, cached re-run < 1 s |
+| Catalog scales to a real-size object list: 3,000 rigged prefabs + 20,000 clips in ~9 s (clips grouped by binding set, indexed once); clips fitting too many skeletons counted as ambiguous; diagnostics for empty catalogs | `tests/test_catalog.py`; synthetic benchmark |
+| Studio first-run install (Python env, AssetRipper, Blender 5.2.2), scan and parallel object list on **Windows** with a real Aniimo install (2,165 containers, 2.36 M objects, 4.5 min) | User's machine (log shared, no game files) |
 | Studio Stop button kills the step's whole process tree; progress lines drive the status bar | `tests/test_studio.py` (Linux; Windows `taskkill /T` path untested) |
 
 ## Not verified (no real files or tools available)

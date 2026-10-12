@@ -9,6 +9,9 @@ include_static_meshes = false
 # bound transform paths (CRC32 hashes) exist in the skeleton AND this fraction of them matches.
 min_binding_matches = 3
 min_binding_ratio = 0.8
+# A clip that matches the skeletons of more species than this is not associated by binding match
+# (shared rigs, e.g. humanoid avatar parts, make such a match meaningless); it is counted as ambiguous.
+max_binding_match_species = 3
 # Tokens ignored when deriving a species name from a prefab name.
 stop_tokens = ["prefab", "body", "mesh", "model", "lod0", "skin", "mdl", "char", "npc"]
 

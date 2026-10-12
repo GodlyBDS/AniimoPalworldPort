@@ -110,6 +110,11 @@ skinned renderer's mesh and ordered joint paths),
 provenance), `animations[]` (object, `linked_via` controller|binding-match,
 `binding_overlap` [matched, total], `role_guess` (inferred), `event_count`),
 and `warnings[]`. The `rules` used are embedded for reproducibility.
+`summary` adds `ambiguous_clip_count` (unlinked clips whose bindings fit more
+than `max_binding_match_species` skeletons, e.g. shared humanoid rigs, and are
+therefore not assigned) and `diagnostics` (renderers found, with mesh, with
+GameObject, in a hierarchy, root GameObjects, and the serialized files holding
+meshes missing from the object list) to explain small or empty catalogs.
 
 ## Creature project (`aniimo-pal/creature`, schema 0.3.0, may change)
 
