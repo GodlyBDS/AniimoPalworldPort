@@ -24,6 +24,7 @@ from typing import Any
 
 from aniimo_pal import TOOL_NAME, __version__
 from aniimo_pal.catalog.rules import CatalogRules, match_keyword, tokens
+from aniimo_pal.creature.variants import BASE_REGION, STANDARD, variant_key
 from aniimo_pal.inventory import ObjectIndex
 
 SCHEMA_ID = "aniimo-pal/catalog"
@@ -260,43 +261,55 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
 def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]], group_evidence: list[str],
              orphan_clips: list[dict[str, Any]], used_keys: set[str]) -> dict[str, Any]:
     warnings: list[str] = []
-    # --- variant classification -------------------------------------------
+    # --- identity classification (form and Shiny detected independently) -----
+    prismana_words = {"prismana": rules.variant_keywords.get("prismana", [])}
+    shiny_words = {"shiny": rules.variant_keywords.get("shiny", [])}
     prefabs = []
     for c in members:
         root = c["root"]
+        texts = [("prefab-name", root.get("name"))]
+        if root.get("asset_path"):
+            texts.append(("asset-path", re.sub(r"\.prefab$", "", root["asset_path"].rsplit("/", 1)[-1])))
+        texts += [("material-name", m.get("name")) for m in c["materials"]]
         evidence = []
-        hit = match_keyword(root.get("name"), rules.variant_keywords)
-        source = "prefab-name"
-        if hit is None and root.get("asset_path"):
-            hit = match_keyword(re.sub(r"\.prefab$", "", root["asset_path"].rsplit("/", 1)[-1]), rules.variant_keywords)
-            source = "asset-path"
-        if hit is None:
-            for m in c["materials"]:
-                hit = match_keyword(m.get("name"), rules.variant_keywords)
+        hits = {}
+        for label, table in (("prismana", prismana_words), ("shiny", shiny_words)):
+            for source, text in texts:
+                hit = match_keyword(text, table)
                 if hit:
-                    source = "material-name"
+                    hits[label] = True
+                    evidence.append(f"{source}-keyword:{hit[1]}")
                     break
-        variant = hit[0] if hit else "normal"
-        if hit:
-            evidence.append(f"{source}-keyword:{hit[1]}")
         prefabs.append({"object": root["id"], "name": root.get("name"), "asset_path": root.get("asset_path"),
-                        "container": root.get("container"), "variant": variant,
-                        "variant_provenance": "inferred" if hit else "default", "variant_evidence": evidence,
+                        "container": root.get("container"), "region": BASE_REGION,
+                        "form": "prismana" if hits.get("prismana") else "normal",
+                        "appearance": "shiny" if hits.get("shiny") else STANDARD,
+                        "variant_provenance": "inferred" if hits else "default", "variant_evidence": evidence,
                         "_cand": c})
 
-    normals = [p for p in prefabs if p["variant"] == "normal"]
+    for form in ("normal", "prismana"):
+        standard = sorted((p for p in prefabs if p["form"] == form and p["appearance"] == STANDARD),
+                          key=lambda p: (len(p["name"] or ""), p["object"]))
+        for p in standard[1:]:
+            p["form"] = "unclassified"
+            p["variant_evidence"].append("additional-prefab-without-distinguishing-keyword")
+        if len(standard) > 1:
+            warnings.append(f"{len(standard)} prefabs look like the {form} standard appearance; "
+                            "extra ones marked 'unclassified'")
+        shinies = sorted((p for p in prefabs if p["form"] == form and p["appearance"] == "shiny"),
+                         key=lambda p: (p["name"] or "", p["object"]))
+        for i, p in enumerate(shinies, 1):
+            p["appearance"] = f"shiny_{i:02d}"
+            p["variant_evidence"].append("appearance-numbered-by-name-order")
+        if shinies:
+            warnings.append(f"{len(shinies)} {form} Shiny prefab(s) numbered by name order (inferred); "
+                            "verify appearance identities against the source data")
+    for p in prefabs:
+        p["variant"] = "unclassified" if p["form"] == "unclassified" else variant_key(p["form"], p["appearance"])
+
+    normals = [p for p in prefabs if p["form"] == "normal" and p["appearance"] == STANDARD]
     if not normals:
         warnings.append("no prefab without a variant keyword; normal variant must be chosen manually")
-    elif len(normals) > 1:
-        normals.sort(key=lambda p: (len(p["name"] or ""), p["object"]))
-        for p in normals[1:]:
-            p["variant"] = "unclassified"
-            p["variant_evidence"].append("additional-prefab-without-variant-keyword")
-        warnings.append(f"{len(normals)} prefabs look like the normal variant; extra ones marked 'unclassified'")
-    for v in ("shiny", "prismana"):
-        same = [p for p in prefabs if p["variant"] == v]
-        if len(same) > 1:
-            warnings.append(f"{len(same)} prefabs matched variant '{v}'; review required")
 
     base = normals[0] if normals else prefabs[0]
     stem = _stem(base["name"], rules)
@@ -310,38 +323,48 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
     # --- assets -------------------------------------------------------------
     assets: dict[str, dict[str, Any]] = {}
 
-    def add(obj: dict[str, Any], role: str, variant: str, evidence: str, provenance: str = "verified",
+    def add(obj: dict[str, Any], role: str, scope: tuple[str, str], evidence: str, provenance: str = "verified",
             slot: str | None = None) -> None:
         entry = assets.get(obj["id"])
         if entry is None:
-            entry = dict(_ref_entry(idx, obj), role=role, variants=set(), evidence=[], provenance=provenance)
+            entry = dict(_ref_entry(idx, obj), role=role, scopes=set(), evidence=[], provenance=provenance)
             if slot:
                 entry["slot"] = slot
             assets[obj["id"]] = entry
-        entry["variants"].add(variant)
+        entry["scopes"].add(scope)
         if evidence not in entry["evidence"]:
             entry["evidence"].append(evidence)
 
     for p in prefabs:
-        c, v = p["_cand"], p["variant"]
+        c, scope = p["_cand"], (p["form"], p["appearance"])
         for m in c["meshes"]:
-            add(m, "mesh", v, "prefab>renderer>mesh")
+            add(m, "mesh", scope, "prefab>renderer>mesh")
         for mat in c["materials"]:
-            add(mat, "material", v, "prefab>renderer>material")
+            add(mat, "material", scope, "prefab>renderer>material")
             for slot, tex in _material_textures(idx, mat):
-                add(tex, "texture", v, f"material>{slot}", slot=slot)
+                add(tex, "texture", scope, f"material>{slot}", slot=slot)
         for av in c["avatars"]:
-            add(av, "skeleton", v, "prefab>animator>avatar")
+            add(av, "skeleton", scope, "prefab>animator>avatar")
         for ctrl in c["controllers"]:
-            add(ctrl, "other", v, "prefab>animator>controller")
+            add(ctrl, "other", scope, "prefab>animator>controller")
 
-    variant_names = {p["variant"] for p in prefabs}
+    species_forms = {p["form"] for p in prefabs}
+    species_apps = {p["appearance"] for p in prefabs}
     asset_list = []
     for entry in assets.values():
-        vs = entry.pop("variants")
-        entry["variant"] = "shared" if (vs == variant_names or len(vs) > 1) else next(iter(vs))
+        scopes = entry.pop("scopes")
+        forms = {f for f, _a in scopes}
+        apps = {a for _f, a in scopes}
+        entry["region"] = "any"
+        entry["form"] = "shared" if (len(forms) > 1 or forms == species_forms) else next(iter(forms))
+        if len(apps) == 1 and apps != species_apps:
+            entry["appearance"] = next(iter(apps))
+        elif STANDARD in apps or apps == species_apps:
+            entry["appearance"] = "any"
+        else:
+            entry["appearance"] = "shiny"
         asset_list.append(entry)
-    asset_list.sort(key=lambda a: (a["role"], a["variant"], a["name"] or "", a["object"]))
+    asset_list.sort(key=lambda a: (a["role"], a["form"], a["appearance"], a["name"] or "", a["object"]))
 
     # --- skeleton -------------------------------------------------------------
     base_cand = base["_cand"]

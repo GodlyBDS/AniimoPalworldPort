@@ -160,9 +160,20 @@ def extract_creature(creature: dict[str, Any], creature_dir: str | Path, game_ro
     return report
 
 
+def _scope_dir(asset: dict[str, Any]) -> str:
+    """Output sub-folder for an asset's identity scope, e.g. 'normal', 'prismana/shiny_03', 'snow/shared'."""
+    parts = []
+    if asset.get("region", "any") not in ("any", "base"):
+        parts.append(asset["region"])
+    parts.append(asset.get("form", "shared"))
+    if asset.get("appearance", "any") not in ("any", "standard"):
+        parts.append(asset["appearance"])
+    return "/".join(parts)
+
+
 def _export_one(reader, asset: dict[str, Any], out_root: Path, unique, texture_files: dict[str, str]) -> str | None:
     role = asset["role"]
-    variant = asset.get("variant", "shared")
+    variant = _scope_dir(asset)
     fallback = f"obj_{reader.path_id}"
     if role == "texture":
         tex = reader.parse_as_object()

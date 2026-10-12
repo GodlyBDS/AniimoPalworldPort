@@ -150,30 +150,92 @@ Recommended approach (to confirm in milestone 4):
   The shell only reads and writes the JSON documents above, so CLI and GUI stay
   interchangeable.
 
-## 6. Variants, rare spawning and persistence
+## 6. Identity, variants, rarity, regional forms and persistence
 
-Requirements: Normal/Shiny/Prismana are variants of one species. Shiny and
-Prismana probabilities are configured independently. Exactly one variant comes
-out of each spawn event (a rare variant **replaces** the normal individual), and
-the variant survives capture, storage and save/load.
+### 6.1 Identity model (five independent properties)
+Every individual creature has an identity built from properties that combine
+freely. These are never separate, mutually exclusive creature definitions:
 
-Implemented now (`creature/variants.py`): the **reference semantics**. One
-uniform draw `u` is partitioned into `[0, p_prismana)` → Prismana,
-`[p_prismana, p_prismana + p_shiny)` → Shiny, otherwise Normal. Validation
-rejects a combined probability above 1. Tests check exclusivity and
-frequencies. `aniimo-pal creature roll` lets users check their configured rarity.
-The in-game implementation must match this function and is tested against it.
+| Property | Values | Decided by |
+|----------|--------|-----------|
+| Species | the creature project (`id`) | Palworld's spawn rules (step 1) |
+| Evolution stage | `evolution.stage`, one project per stage, linked by `previous`/`next` | source data |
+| Regional form | `base` or a regional form id (e.g. `snow`) | the spawn **biome** (step 2), not a roll |
+| Special form | `normal` or `prismana` | independent **form roll** (step 3) |
+| Appearance | `standard` or one of the Shiny appearances (12 per species by the brief) | independent **Shiny roll** (step 4) + equal-weight pick (step 5) |
 
-In-game implementation options (to verify against real game data in milestone 6):
+Example: a Snow regional form can also be Prismana with Shiny appearance 7,
+if the source data provides those assets.
 
-| Option | Spawn exclusivity | Persistence | Risk |
-|--------|-------------------|-------------|------|
-| **A. Separate character row per variant** (`<id>`, `<id>_shiny`, `<id>_prismana`) sharing skeleton/animations, different materials | Native if a spawn group picks one weighted entry per individual; otherwise a per-spawn hook picks the row using the reference roll | Free: the save already stores the character ID | Paldeck, breeding and condenser treat variants as separate entries unless linked |
-| B. One row + a variant flag on the individual | Needs a spawn hook | Needs save-data hooks: fragile across game updates | High |
+### 6.2 Spawn/hatch selection order (reference: `creature/variants.py`)
+1. Palworld selects the species.
+2. `region_for_biome` → regional form (`base` if no regional form claims the biome).
+3. Prismana roll: `u_form < p_prismana`.
+4. Independent Shiny roll: `u_shiny < p_shiny`.
+5. If Shiny: pick an appearance by weight (equal by default).
+6. Resolve assets for the identity and spawn **exactly one** individual.
 
-Option A is the working assumption because persistence then needs no custom save
-code. It is **unverified** until we confirm how Palworld stores a captured Pal's
-identity.
+Rare outcomes change that one individual and never add copies.
+`select_individual` / `roll_individual` are the specification and test oracle
+for the in-game implementation.
+
+### 6.3 Rarity rules
+- **P(Prismana Shiny) = p_prismana × p_shiny.** It is computed, never
+  configured, so it is always rarer than either alone. Example from the brief:
+  0.1 % × 1 % = 0.001 % ≈ 1 in 100,000.
+- Separate `wild` and `egg` probabilities. Prismana is primarily wild: the egg
+  default is 0, and an egg chance above the wild chance is an error.
+- Validation errors: Prismana not rarer than Shiny in a context; a probability
+  of 1 without explicit `allow_guaranteed`; a configured Prismana-Shiny
+  probability; enabled variants with zero chance.
+- Policy warnings (per-creature `variants.rarity.policy`, documented defaults):
+  Shiny above 1 % per roll is not "genuinely rare"; Prismana less than 2× rarer
+  than Shiny; Prismana possible from eggs; a Shiny appearance count other than
+  12; unequal appearance weights; any explicit pity/guarantee setting.
+- **No pity system and no guaranteed rare outcomes** unless the user enables
+  them explicitly. The reference roller implements neither.
+- Defaults written by `creature init --from-catalog` are placeholders, not
+  balancing decisions: wild Shiny 1/500 and Prismana 1/5,000 (Prismana Shiny
+  1 in 2.5 million); egg Shiny 1/500 and Prismana 0.
+- `aniimo-pal creature roll` prints exact odds ("1 in N") per context and
+  region, next to a simulation.
+
+### 6.4 Regional forms
+- Declared in `variants.regions.forms[]`: `id`, `name`, target-game `biomes`,
+  `provenance` (**verified or user only**, so regional forms are never
+  invented), optional `allow_prismana`, an optional `appearances` subset
+  (which Shiny appearances exist for that region), and optional
+  `profile_overrides`/`combat_overrides` (stats, elements, abilities, work).
+- One biome maps to at most one regional form. Assets carry a `region` scope
+  (`any`, `base` or a regional form id).
+- Breeding inheritance is configured by `variants.regions.inheritance.mode`
+  (`parent`, `biome` or `configurable`). Semantics are defined in milestone 6.
+- Still to build: catalog detection of regional prefabs from real data
+  (milestone 3 extension, rule-driven), per-region conversion (milestone 4),
+  Palworld biome ids and spawner placement (milestone 6), and the editor panel
+  (milestone 9).
+
+### 6.5 Override layering
+Stats and combat resolve as: base → regional-form overrides → Prismana
+overrides → Shiny overrides, each needing `verified` or `user` provenance.
+Shiny is cosmetic unless the data says otherwise. Rarity, stats/work and
+combat stay in separate sections and never leak into each other.
+
+### 6.6 Persistence (in-game requirement, unverified)
+The full identity (species, stage, region, form, appearance) must survive
+capture, Palbox storage, save/load, breeding and evolution. A captured Snow
+Pal stays Snow in any biome. Implementation options, to be verified in
+milestone 6 against how Palworld saves a Pal:
+
+| Option | Persistence | Cost / risk |
+|--------|-------------|-------------|
+| A. One character row per (region, form) with appearance as a material variant | Region and form persist via the CharacterID; the appearance index still needs storage | Few rows; needs one stored index |
+| B. One character row per full identity | Everything persists via the CharacterID | Up to regions × 2 × 13 rows per species; Paldeck/breeding fragmentation |
+| C. One row + identity fields in custom save data | Needs save hooks | Fragile across game updates |
+
+Note: vanilla Palworld has no evolution mechanic **[unverified]**, so Aniimo
+evolution lines need their own design. The identity must carry across a stage
+change whenever the next stage has assets for it.
 
 ## 7. Palworld integration modes
 
@@ -277,8 +339,8 @@ not copying numbers between two unrelated scales.
 | Original Aniimo stats, elements, work/job levels, tiers, stage, role | `source_profile` | Read from game data (provenance `verified`) or entered by the user. Never rewritten by translation. |
 | Palworld stats, elements, work suitability | `translation` | Each value records `from` (source ids), `method` (rule id or `user`), `auto_value`, `overridden` |
 | Balancing preset + rules version | `translation.profile` | `faithful`, `vanilla_balanced` or `custom` |
-| Variant-specific differences | `variants.<shiny\|prismana>.profile_overrides` | `verified`/`user` provenance only; Normal is the base |
-| Spawn rarity | `variants.*.spawn_probability` | Rejected inside profile overrides |
+| Variant-specific differences | `variants.regions.forms[].profile_overrides`, `variants.forms.prismana.profile_overrides`, `variants.shiny.profile_overrides` | `verified`/`user` provenance only; Normal is the base |
+| Spawn rarity | `variants.rarity` (wild/egg) | Rejected inside profile overrides |
 | Combat | `combat` | Rejected inside profile overrides |
 
 The vocabularies (element ids, stat ids, work categories, level ranges) come

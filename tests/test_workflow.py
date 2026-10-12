@@ -24,8 +24,11 @@ def test_from_catalog_autoconfirms_verified(pipeline):
     assert validate_creature(c) == []
     assert c["id"] == "aniimo_foxlet" and c["status"] == "mapped"
     assert all(a["association"] == "confirmed" for a in c["assets"])
-    assert c["variants"]["shiny"] == {"enabled": True, "spawn_probability": 0.002}
-    assert c["variants"]["prismana"] == {"enabled": True, "spawn_probability": 0.0005}
+    v = c["variants"]
+    assert v["forms"]["prismana"]["enabled"] and v["shiny"]["enabled"]
+    assert [a["id"] for a in v["shiny"]["appearances"]] == ["shiny_01"]  # only what the data contains
+    assert v["rarity"]["wild"] == {"prismana_probability": 0.0002, "shiny_probability": 0.002}
+    assert v["rarity"]["egg"] == {"prismana_probability": 0.0, "shiny_probability": 0.002}
     assert {a["role"] for a in c["assets"]} == {"mesh", "material", "texture", "skeleton", "animation", "other"}
     assert c["skeleton"]["bones"] and c["combat"]["ultimate"]["target"] == "partner_skill"
 
@@ -41,6 +44,7 @@ def test_inferred_stay_proposed_until_reviewed(pipeline):
     assert c["status"] == "draft"
     assert {c["assets"][i]["name"] for i in todo} == {"Mossbun_Idle", "Mossbun_Hop", "Mossbun_Ult"}
     assert c["variants"]["shiny"]["enabled"] is False  # no shiny prefab found -> not invented
+    assert c["variants"]["forms"]["prismana"]["enabled"] is False
     set_associations(c, confirm=todo[:2], reject=todo[2:])
     assert c["status"] == "mapped" and validate_creature(c) == []
 
@@ -51,8 +55,10 @@ def test_associate_errors(pipeline):
         set_associations(c, confirm=[99])
     with pytest.raises(CreatureError, match="at once"):
         set_associations(c, confirm=[5], reject=[5])
-    with pytest.raises(CreatureError, match="variant must be"):
-        set_associations(c, variants={0: "golden"})
+    with pytest.raises(CreatureError, match="form must be"):
+        set_associations(c, forms={0: "golden"})
+    with pytest.raises(CreatureError, match="appearance must be"):
+        set_associations(c, appearances={0: "shiny_09"})
 
 
 def test_extract_outputs(pipeline):
@@ -61,7 +67,7 @@ def test_extract_outputs(pipeline):
     assert report["summary"] == {"ok": 15, "errors": 0, "skipped": 1}  # controller has no UnityPy export
     assert c["status"] == "extracted"
     out = path.parent / "extract" / "unitypy"
-    img = Image.open(out / "textures" / "shiny" / "Foxlet_Shiny_Albedo.png")
+    img = Image.open(out / "textures" / "normal" / "shiny_01" / "Foxlet_Shiny_Albedo.png")
     assert img.size == (4, 4) and img.getpixel((0, 0))[:3] == (240, 220, 60)
     assert "v " in (out / "meshes" / "Foxlet_Body.obj").read_text()
     mat = json.loads((out / "materials" / "prismana" / "Foxlet_Prismana_Mat.json").read_text())

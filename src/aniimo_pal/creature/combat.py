@@ -111,14 +111,26 @@ def validate_combat(combat: Any, animation_objects: set[str], other_objects: set
     return errors
 
 
+def override_locations(variants: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """(path, block) of every place that may carry profile/combat overrides.
+
+    Order is the inheritance order: regional form, then Prismana form, then Shiny.
+    """
+    out = []
+    for r in ((variants.get("regions") or {}).get("forms")) or []:
+        if isinstance(r, dict):
+            out.append((f"variants.regions.{r.get('id')}", r))
+    out.append(("variants.forms.prismana", variants["forms"]["prismana"]))
+    out.append(("variants.shiny", variants["shiny"]))
+    return out
+
+
 def validate_variant_overrides(variants: dict[str, Any]) -> list[str]:
     errors = []
-    for name, v in variants.items():
-        ov = v.get("combat_overrides") if isinstance(v, dict) else None
-        if ov is None:
-            continue
-        if name == "normal":
-            errors.append("variants.normal cannot have combat_overrides (it is the base configuration)")
-        elif not isinstance(ov, dict) or ov.get("provenance") not in ("verified", "user"):
-            errors.append(f"variants.{name}.combat_overrides needs provenance 'verified' or 'user'")
+    if "combat_overrides" in variants["forms"]["normal"] or "profile_overrides" in variants["forms"]["normal"]:
+        errors.append("variants.forms.normal cannot have overrides (it is the base configuration)")
+    for where, block in override_locations(variants):
+        ov = block.get("combat_overrides")
+        if ov is not None and (not isinstance(ov, dict) or ov.get("provenance") not in ("verified", "user")):
+            errors.append(f"{where}.combat_overrides needs provenance 'verified' or 'user'")
     return errors

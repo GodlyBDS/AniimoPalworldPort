@@ -28,21 +28,26 @@ def test_species_and_variants(pipeline):
     assert [s["key"] for s in cat["species"]] == ["foxlet", "mossbun"]
     fox = _species(cat, "foxlet")
     assert {p["name"]: p["variant"] for p in fox["prefabs"]} == {
-        "Foxlet": "normal", "Foxlet_Shiny": "shiny", "Foxlet_Prismana": "prismana"}
+        "Foxlet": "normal", "Foxlet_Shiny": "normal+shiny_01", "Foxlet_Prismana": "prismana"}
+    shiny = next(p for p in fox["prefabs"] if p["name"] == "Foxlet_Shiny")
+    assert (shiny["region"], shiny["form"], shiny["appearance"]) == ("base", "normal", "shiny_01")
     assert fox["grouping_evidence"] == ["shared-mesh"]
     assert fox["suggested_id"] == "aniimo_foxlet" and fox["display_name"] == "Foxlet"
-    assert fox["warnings"] == []
+    assert fox["warnings"] == ["1 normal Shiny prefab(s) numbered by name order (inferred); "
+                               "verify appearance identities against the source data"]
 
 
 def test_asset_roles_and_variant_attribution(pipeline):
     fox = _species(pipeline["catalog"], "foxlet")
     by_name = {a["name"]: a for a in fox["assets"]}
-    assert by_name["Foxlet_Body"]["role"] == "mesh" and by_name["Foxlet_Body"]["variant"] == "shared"
+    assert by_name["Foxlet_Body"]["role"] == "mesh"
+    assert (by_name["Foxlet_Body"]["form"], by_name["Foxlet_Body"]["appearance"]) == ("shared", "any")
     assert by_name["FoxletAvatar"]["role"] == "skeleton"
-    assert by_name["Foxlet_Shiny_Albedo"]["variant"] == "shiny"
+    assert (by_name["Foxlet_Shiny_Albedo"]["form"], by_name["Foxlet_Shiny_Albedo"]["appearance"]) == ("normal", "shiny_01")
     assert by_name["Foxlet_Shiny_Albedo"]["slot"] == "_MainTex"
-    assert by_name["Foxlet_Prismana_Mat"]["variant"] == "prismana"
-    assert by_name["Foxlet_Normal"]["variant"] == "normal"
+    assert (by_name["Foxlet_Prismana_Mat"]["form"], by_name["Foxlet_Prismana_Mat"]["appearance"]) == ("prismana", "standard")
+    assert (by_name["Foxlet_Normal"]["form"], by_name["Foxlet_Normal"]["appearance"]) == ("normal", "standard")
+    assert all(a["region"] == "any" for a in fox["assets"])
     assert all(a["provenance"] == "verified" for a in fox["assets"])
     assert all(a["sha256"] and a["container"] == "StreamingAssets/foxlet.bundle" for a in fox["assets"])
 
@@ -112,7 +117,7 @@ def test_duplicated_meshes_grouped_by_skeleton_and_name(tmp_path):
     sp = _catalog_for(tmp_path, b)["species"]
     assert len(sp) == 1
     assert sp[0]["grouping_evidence"] == ["same-skeleton+name-stem"]
-    assert {p["variant"] for p in sp[0]["prefabs"]} == {"normal", "shiny"}
+    assert {p["variant"] for p in sp[0]["prefabs"]} == {"normal", "normal+shiny_01"}
 
 
 def test_static_props_ignored_by_default(tmp_path):
@@ -149,3 +154,16 @@ def test_rules_validation(tmp_path, text, msg):
     p.write_text(text)
     with pytest.raises(ConfigError, match=msg.replace("(", r"\(").replace("]", r"\]")):
         load_rules(p)
+
+
+def test_prismana_shiny_detected_as_both(tmp_path):
+    b = ub.SerializedBuilder()
+    ids = ub.add_creature(b, "Foxlet", bones=ub.DEFAULT_BONES, clips=["Idle"], variants={"prismana": (1, 2, 3)})
+    ub.add_creature(b, "Foxlet_Prismana_Shiny_B", bones=ub.DEFAULT_BONES, clips=[], mesh=ids["normal"].mesh)
+    ub.add_creature(b, "Foxlet_Prismana_Shiny_A", bones=ub.DEFAULT_BONES, clips=[], mesh=ids["normal"].mesh)
+    sp = _catalog_for(tmp_path, b)["species"][0]
+    got = {p["name"]: (p["form"], p["appearance"]) for p in sp["prefabs"]}
+    assert got == {"Foxlet": ("normal", "standard"), "Foxlet_Prismana": ("prismana", "standard"),
+                   "Foxlet_Prismana_Shiny_A": ("prismana", "shiny_01"),
+                   "Foxlet_Prismana_Shiny_B": ("prismana", "shiny_02")}
+    assert any("numbered by name order" in w for w in sp["warnings"])

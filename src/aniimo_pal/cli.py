@@ -237,10 +237,11 @@ def cmd_creature_init(args: argparse.Namespace, config: Config) -> int:
 
         if not args.species:
             raise ToolkitError("--species is required with --from-catalog")
+        rarity = {"wild": {"shiny_probability": args.wild_shiny, "prismana_probability": args.wild_prismana},
+                  "egg": {"shiny_probability": args.egg_shiny, "prismana_probability": args.egg_prismana}}
         data = creature_from_catalog(
             _read_json(args.from_catalog), args.species, creature_id=args.id, display_name=args.name,
-            shiny_probability=args.shiny_probability, prismana_probability=args.prismana_probability,
-            auto_confirm_verified=not args.propose_all)
+            rarity=rarity, auto_confirm_verified=not args.propose_all)
     else:
         if not args.id or not args.name:
             raise ToolkitError("--id and --name are required (or use --from-catalog/--species)")
@@ -287,15 +288,16 @@ def cmd_creature_review(args: argparse.Namespace, config: Config) -> int:
     todo = set(pending(c))
     print(f"{c['id']} ({c['display_name']}) status={c['status']}  pending={len(todo)}")
     for p in c.get("prefabs", []):
-        print(f"  prefab {p['name']!s:<32} variant={p['variant']:<12} {', '.join(p.get('variant_evidence') or [])}")
-    print(f"  {'#':>3} {'role':<10} {'variant':<12} {'assoc':<10} {'prov':<9} {'name':<36} evidence")
+        print(f"  prefab {p['name']!s:<32} {p.get('variant', '?'):<22} {', '.join(p.get('variant_evidence') or [])}")
+    print(f"  {'#':>3} {'role':<10} {'form':<12} {'appearance':<10} {'assoc':<10} {'prov':<9} {'name':<32} evidence")
     for i, a in enumerate(c["assets"]):
         if args.pending and i not in todo:
             continue
         mark = "*" if i in todo else " "
         extra = f" role_guess={a['role_guess']}" if a.get("role_guess") else ""
-        print(f" {mark}{i:>3} {a['role']:<10} {a.get('variant', 'shared'):<12} {a['association']:<10} "
-              f"{a.get('provenance', 'user'):<9} {str(a.get('name'))[:36]:<36} {', '.join(a.get('evidence') or [])}{extra}")
+        print(f" {mark}{i:>3} {a['role']:<10} {a.get('form', 'shared'):<12} {a.get('appearance', 'any'):<10} "
+              f"{a['association']:<10} {a.get('provenance', 'user'):<9} {str(a.get('name'))[:32]:<32} "
+              f"{', '.join(a.get('evidence') or [])}{extra}")
     for note in c.get("notes", []):
         print(f"  note: {note}")
     return EXIT_OK
@@ -306,12 +308,15 @@ def cmd_creature_associate(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.creature.workflow import pending, set_associations
 
     c = load_creature(args.file)
-    variants = {}
-    for item in args.variant or []:
-        idx, _, name = item.partition("=")
-        variants[int(idx)] = name
+    def pairs(items):
+        out = {}
+        for item in items or []:
+            idx, _, name = item.partition("=")
+            out[int(idx)] = name
+        return out
+
     set_associations(c, confirm=_parse_indices(args.confirm), reject=_parse_indices(args.reject),
-                     variants=variants, confirm_all=args.confirm_all)
+                     forms=pairs(args.form), appearances=pairs(args.appearance), confirm_all=args.confirm_all)
     save_creature(c, args.file)
     print(f"saved {args.file}: status={c['status']}, pending={len(pending(c))}")
     return EXIT_OK
@@ -461,7 +466,7 @@ def cmd_creature_roll(args: argparse.Namespace, config: Config) -> int:
     from collections import Counter
 
     from aniimo_pal.creature.model import load_creature, validate_creature
-    from aniimo_pal.creature.variants import roll_variant, variant_probabilities
+    from aniimo_pal.creature.variants import CONTEXTS, one_in, outcome_probabilities, rarity_warnings, select_individual
 
     data = load_creature(args.file)
     errors = validate_creature(data)
@@ -469,12 +474,32 @@ def cmd_creature_roll(args: argparse.Namespace, config: Config) -> int:
         raise ToolkitError("invalid creature project: " + "; ".join(errors))
     if args.n < 1:
         raise ToolkitError("--n must be at least 1")
-    rng = random.Random(args.seed)
-    counts = Counter(roll_variant(data["variants"], rng=rng) for _ in range(args.n))
-    probs = variant_probabilities(data["variants"])
-    print(f"{args.n} simulated spawn events (seed {args.seed}); one individual per event:")
-    for name in ("normal", "shiny", "prismana"):
-        print(f"  {name:<9} {counts[name]:>9}  observed {counts[name] / args.n:.6f}  configured {probs[name]:.6f}")
+    contexts = CONTEXTS if args.context == "both" else (args.context,)
+    from aniimo_pal.creature.variants import region_for_biome
+
+    region = region_for_biome(data["variants"], args.biome)
+    print(f"{data['id']}: biome={args.biome or '-'} -> regional form {region!r}; one individual per event")
+    for ctx in contexts:
+        exact = outcome_probabilities(data["variants"], ctx, region)
+        rng = random.Random(args.seed)
+        counts: Counter[str] = Counter()
+        apps: Counter[str] = Counter()
+        for _ in range(args.n):
+            ind = select_individual(data, biome=args.biome, context=ctx, rng=rng)
+            shiny = ind["appearance"] != "standard"
+            counts[f"{ind['form']}{'_shiny' if shiny else ''}"] += 1
+            if shiny:
+                apps[ind["appearance"]] += 1
+        print(f"[{ctx}] {args.n:,} simulated events (seed {args.seed})")
+        for key, label in (("normal", "Normal"), ("normal_shiny", "Shiny"), ("prismana", "Prismana"),
+                           ("prismana_shiny", "Prismana Shiny")):
+            p = exact[key]
+            print(f"  {label:<15} exact {p:.8f} ({one_in(p):>18})   observed {counts[key]:>9,}")
+        if exact["per_appearance"]:
+            spread = ", ".join(f"{k}:{apps[k]}" for k in sorted(exact["per_appearance"]))
+            print(f"  shiny appearances observed: {spread}")
+    for w in rarity_warnings(data["variants"]):
+        print(f"warning: {w}")
     return EXIT_OK
 
 
@@ -586,9 +611,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name", help="display name (default from catalog)")
     p.add_argument("--from-catalog", metavar="CATALOG", help="prefill from a catalog species")
     p.add_argument("--species", help="catalog species key (see `catalog list`)")
-    p.add_argument("--shiny-probability", type=float, default=0.002, help="per-spawn chance if a shiny variant exists")
-    p.add_argument("--prismana-probability", type=float, default=0.0005,
-                   help="per-spawn chance if a prismana variant exists")
+    p.add_argument("--wild-shiny", type=float, default=0.002, help="wild Shiny roll chance (placeholder default)")
+    p.add_argument("--wild-prismana", type=float, default=0.0002, help="wild Prismana roll chance (placeholder default)")
+    p.add_argument("--egg-shiny", type=float, default=0.002, help="egg Shiny roll chance (placeholder default)")
+    p.add_argument("--egg-prismana", type=float, default=0.0, help="egg Prismana roll chance (default 0: wild-only)")
     p.add_argument("--propose-all", action="store_true",
                    help="do not auto-confirm associations backed by explicit game-data references")
     p.set_defaults(func=cmd_creature_init)
@@ -600,7 +626,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file")
     p.add_argument("--confirm", metavar="I,J,K-L", help="asset indices to confirm")
     p.add_argument("--reject", metavar="I,J,K-L", help="asset indices to reject")
-    p.add_argument("--variant", action="append", metavar="I=VARIANT", help="set an asset's variant (shared|normal|shiny|prismana)")
+    p.add_argument("--form", action="append", metavar="I=FORM", help="set an asset's form (shared|normal|prismana)")
+    p.add_argument("--appearance", action="append", metavar="I=APPEARANCE",
+                   help="set an asset's appearance (any|standard|shiny|shiny_NN)")
     p.add_argument("--confirm-all", action="store_true", help="confirm every remaining proposed association")
     p.set_defaults(func=cmd_creature_associate)
     p = csub.add_parser("extract", help="export confirmed assets with UnityPy into the creature folder")
@@ -622,8 +650,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source-system", metavar="TOML", help="Aniimo system definition (default: bundled, unverified)")
     p.add_argument("--target-system", metavar="TOML", help="Palworld system definition (default: bundled, unverified)")
     p.set_defaults(func=cmd_creature_validate)
-    p = csub.add_parser("roll", help="simulate variant selection to check configured rarity")
+    p = csub.add_parser("roll", help="exact odds + simulation of form/Shiny rolls (wild and egg)")
     p.add_argument("file")
+    p.add_argument("--context", choices=["wild", "egg", "both"], default="both")
+    p.add_argument("--biome", help="target-game biome id (selects the regional form)")
     p.add_argument("--n", type=int, default=100000, help="number of simulated spawn events")
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(func=cmd_creature_roll)

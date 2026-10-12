@@ -11,7 +11,9 @@ an association survives re-scans and game updates that move files; a changed
 hash means the asset really changed and must be re-confirmed.
 
 Schema version 0.x: fields may still change before the editor milestone.
-0.1.x documents are read as-is (all 0.2 additions are optional).
+0.1.x/0.2.x documents are migrated in memory on load/validate (``migrate_creature``):
+their mutually exclusive Normal/Shiny/Prismana variants become the 0.3 identity
+model (independent form + appearance rolls, regional forms, wild/egg rarity).
 """
 
 from __future__ import annotations
@@ -27,21 +29,31 @@ from aniimo_pal.creature.profile import (
     validate_translation,
     validate_variant_profile_overrides,
 )
-from aniimo_pal.creature.variants import variant_probabilities
+from aniimo_pal.creature.variants import (
+    BASE_REGION,
+    FORMS,
+    STANDARD,
+    new_variants,
+    regional_forms,
+    shiny_appearances,
+    validate_variants,
+)
 from aniimo_pal.errors import ToolkitError
 from aniimo_pal.manifest.io import write_json_atomic
 from aniimo_pal.systems import GameSystem, bundled_system
 
 SCHEMA_ID = "aniimo-pal/creature"
-SCHEMA_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.3.0"
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Workflow order: associations are reviewed ("mapped") before files are extracted.
 STATUSES = ("draft", "mapped", "extracted", "converted", "configured", "validated", "exported")
-VARIANTS = ("normal", "shiny", "prismana")
-ASSET_VARIANTS = ("shared", *VARIANTS, "unclassified")
+# Per-asset identity scope: which individuals an asset applies to.
+ASSET_FORMS = ("shared", *FORMS, "unclassified")
+ASSET_APPEARANCE_GENERIC = ("any", STANDARD, "shiny")  # plus configured shiny appearance ids
+ASSET_REGION_GENERIC = ("any", BASE_REGION)            # plus configured regional form ids
 PROVENANCE = ("verified", "inferred", "user")
 ASSET_ROLES = ("mesh", "skeleton", "texture", "material", "animation", "icon", "audio", "other")
 ASSOCIATION_STATES = ("proposed", "confirmed", "rejected")
@@ -63,11 +75,9 @@ def new_creature(creature_id: str, display_name: str) -> dict[str, Any]:
         "status": "draft",
         "source": {"manifest_sha256": None, "game_version": None},
         "assets": [],
-        "variants": {
-            "normal": {"enabled": True},
-            "shiny": {"enabled": False, "spawn_probability": 0.0},
-            "prismana": {"enabled": False, "spawn_probability": 0.0},
-        },
+        "variants": new_variants(),
+        # One project per evolution stage; stages of a line link to each other.
+        "evolution": None,
         "integration": {"mode": "replace", "replace_target": None, "notes": ""},
         "skeleton": None,
         "combat": new_combat_section(),
@@ -77,13 +87,83 @@ def new_creature(creature_id: str, display_name: str) -> dict[str, Any]:
     }
 
 
+def _validate_evolution(evo: Any) -> list[str]:
+    if evo is None:
+        return []
+    if not isinstance(evo, dict):
+        return ["evolution must be an object or null"]
+    errors = []
+    stage = evo.get("stage")
+    if isinstance(stage, bool) or not isinstance(stage, int) or stage < 1:
+        errors.append("evolution.stage must be a positive integer")
+    for key in ("previous", "next"):
+        v = evo.get(key)
+        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) and ID_RE.match(x) for x in v)):
+            errors.append(f"evolution.{key} must be null or a list of creature ids")
+    if evo.get("provenance") not in PROVENANCE:
+        errors.append(f"evolution.provenance must be one of {PROVENANCE}")
+    return errors
+
+
+def migrate_creature(data: Any) -> Any:
+    """Upgrade a 0.1.x/0.2.x project to 0.3 (returns a new dict; unknown input is returned unchanged).
+
+    0.1/0.2 modelled Normal/Shiny/Prismana as mutually exclusive outcomes of one
+    roll. 0.3 rolls form and appearance independently, per wild/egg context. The
+    old per-spawn chances are carried over as wild chances, eggs get the same
+    Shiny chance and no Prismana, and a history entry asks the user to review.
+    """
+    if not isinstance(data, dict) or data.get("schema") != SCHEMA_ID:
+        return data
+    version = str(data.get("schema_version", ""))
+    if not (version.startswith("0.1") or version.startswith("0.2")):
+        return data
+    import copy
+
+    out = copy.deepcopy(data)
+    old = out.get("variants") or {}
+    new = new_variants()
+    shiny, prismana = old.get("shiny") or {}, old.get("prismana") or {}
+    new["forms"]["prismana"]["enabled"] = bool(prismana.get("enabled"))
+    new["shiny"]["enabled"] = bool(shiny.get("enabled"))
+    if shiny.get("enabled"):
+        new["shiny"]["appearances"] = shiny_appearances(1)
+    pp = float(prismana.get("spawn_probability", 0.0)) if prismana.get("enabled") else 0.0
+    ps = float(shiny.get("spawn_probability", 0.0)) if shiny.get("enabled") else 0.0
+    new["rarity"]["wild"] = {"prismana_probability": pp, "shiny_probability": ps}
+    new["rarity"]["egg"] = {"prismana_probability": 0.0, "shiny_probability": ps}
+    for src_name, dst in (("prismana", new["forms"]["prismana"]), ("shiny", new["shiny"])):
+        for key in ("profile_overrides", "combat_overrides"):
+            if key in (old.get(src_name) or {}):
+                dst[key] = old[src_name][key]
+    out["variants"] = new
+    mapping = {"normal": ("normal", STANDARD), "shiny": ("normal", "shiny_01"), "prismana": ("prismana", STANDARD),
+               "shared": ("shared", "any"), "unclassified": ("unclassified", "any")}
+    for a in out.get("assets") or []:
+        if isinstance(a, dict) and "variant" in a:
+            a["form"], a["appearance"] = mapping.get(a.pop("variant"), ("shared", "any"))
+            a.setdefault("region", "any")
+    for p in out.get("prefabs") or []:
+        if isinstance(p, dict) and "variant" in p:
+            form, app = mapping.get(p["variant"], ("unclassified", STANDARD))
+            p.update(region=BASE_REGION, form=form, appearance=app)
+    out.setdefault("evolution", None)
+    out["schema_version"] = SCHEMA_VERSION
+    out.setdefault("history", []).append({"action": f"migrated-from-{version}",
+                                          "note": "rarity model changed to independent form/shiny rolls; review "
+                                                  "variants.rarity and Shiny appearances"})
+    return out
+
+
 def validate_creature(data: Any, source_system: GameSystem | None = None,
                       target_system: GameSystem | None = None) -> list[str]:
     """Return a list of problems (empty when valid).
 
     Stat/element/work vocabularies are checked against the given game-system
     definitions, defaulting to the bundled (unverified) Aniimo and Palworld ones.
+    Older 0.x documents are migrated in memory first.
     """
+    data = migrate_creature(data)
     if not isinstance(data, dict):
         return ["creature project must be a JSON object"]
     errors: list[str] = []
@@ -100,28 +180,13 @@ def validate_creature(data: Any, source_system: GameSystem | None = None,
     status_rank = STATUSES.index(data["status"]) if data.get("status") in STATUSES else 0
 
     variants = data.get("variants")
-    if not isinstance(variants, dict) or set(variants) != set(VARIANTS):
-        errors.append(f"variants must contain exactly {VARIANTS}")
-        variants = {}
-    else:
-        if variants["normal"].get("enabled") is not True:
-            errors.append("variants.normal must be enabled (rare variants replace the normal outcome)")
-        for name in ("shiny", "prismana"):
-            v = variants[name]
-            p = v.get("spawn_probability", 0.0)
-            if not isinstance(v.get("enabled"), bool):
-                errors.append(f"variants.{name}.enabled must be a boolean")
-            if isinstance(p, bool) or not isinstance(p, (int, float)) or not 0.0 <= p <= 1.0:
-                errors.append(f"variants.{name}.spawn_probability must be a number in [0, 1]")
-            elif v.get("enabled") and p == 0:
-                errors.append(f"variants.{name} is enabled but spawn_probability is 0")
-            elif v.get("enabled") is False and p != 0:
-                errors.append(f"variants.{name} is disabled but has a non-zero spawn_probability")
-        if not errors:
-            try:
-                variant_probabilities(variants)
-            except ValueError as exc:
-                errors.append(f"variants: {exc}")
+    variant_errors = validate_variants(variants)
+    errors.extend(variant_errors)
+    if variant_errors:
+        variants = None
+    appearance_ids = {a["id"] for a in (variants or {}).get("shiny", {}).get("appearances", [])} if variants else set()
+    region_ids = {r["id"] for r in regional_forms(variants)} if variants else set()
+    errors.extend(_validate_evolution(data.get("evolution")))
 
     seen: set[tuple[str, str, str]] = set()
     assets = data.get("assets")
@@ -141,15 +206,23 @@ def validate_creature(data: Any, source_system: GameSystem | None = None,
             errors.append(f"{where}.ref.sha256 must be 64 lowercase hex characters")
         if a.get("role") not in ASSET_ROLES:
             errors.append(f"{where}.role must be one of {ASSET_ROLES}")
-        variant = a.get("variant", "shared")
         state = a.get("association")
-        if variant not in ASSET_VARIANTS:
-            errors.append(f"{where}.variant must be one of {ASSET_VARIANTS}")
-        elif variant in ("shiny", "prismana") and variants and not variants[variant].get("enabled") \
+        form = a.get("form", "shared")
+        appearance = a.get("appearance", "any")
+        region = a.get("region", "any")
+        if form not in ASSET_FORMS:
+            errors.append(f"{where}.form must be one of {ASSET_FORMS}")
+        elif form == "prismana" and variants and not variants["forms"]["prismana"]["enabled"] and state != "rejected":
+            errors.append(f"{where} is assigned to the disabled Prismana form")
+        elif form == "unclassified" and status_rank >= STATUSES.index("mapped") and state != "rejected":
+            errors.append(f"{where}: form must be resolved (not 'unclassified') once status is 'mapped'")
+        if appearance not in ASSET_APPEARANCE_GENERIC and appearance not in appearance_ids:
+            errors.append(f"{where}.appearance must be one of {ASSET_APPEARANCE_GENERIC} or a configured Shiny id")
+        elif appearance not in ("any", STANDARD) and variants and not variants["shiny"]["enabled"] \
                 and state != "rejected":
-            errors.append(f"{where} is assigned to disabled variant {variant!r}")
-        elif variant == "unclassified" and status_rank >= STATUSES.index("mapped") and state != "rejected":
-            errors.append(f"{where}: variant must be resolved (not 'unclassified') once status is 'mapped'")
+            errors.append(f"{where} is assigned to a Shiny appearance but Shiny is disabled")
+        if region not in ASSET_REGION_GENERIC and region not in region_ids:
+            errors.append(f"{where}.region must be 'any', 'base' or a configured regional form id")
         if a.get("provenance", "user") not in PROVENANCE:
             errors.append(f"{where}.provenance must be one of {PROVENANCE}")
         if state not in ASSOCIATION_STATES:
@@ -158,7 +231,7 @@ def validate_creature(data: Any, source_system: GameSystem | None = None,
             errors.append(f"{where}: confirmed associations must pin ref.sha256")
         elif state == "proposed" and status_rank >= STATUSES.index("mapped"):
             errors.append(f"{where}: proposed associations must be confirmed or rejected once status is 'mapped'")
-        key = (str(ref.get("path")), str(ref.get("object", "")), str(variant))
+        key = (str(ref.get("path")), str(ref.get("object", "")), f"{region}|{form}|{appearance}")
         if key in seen:
             errors.append(f"{where} duplicates an earlier asset reference")
         seen.add(key)
@@ -168,14 +241,15 @@ def validate_creature(data: Any, source_system: GameSystem | None = None,
     other_objects = {str((a.get("ref") or {}).get("object")) for a in assets
                      if isinstance(a, dict) and a.get("role") != "animation" and a.get("association") != "rejected"}
     errors.extend(validate_combat(data.get("combat"), anim_objects, other_objects))
-    if isinstance(variants, dict) and variants:
+    if variants:
         errors.extend(validate_variant_overrides(variants))
 
     src = source_system or bundled_system("aniimo")
     dst = target_system or bundled_system("palworld")
     errors.extend(validate_source_profile(data.get("source_profile"), src))
     errors.extend(validate_translation(data.get("translation"), data.get("source_profile"), dst))
-    errors.extend(validate_variant_profile_overrides(data, src, dst))
+    if variants:  # only meaningful once the variants block itself is valid
+        errors.extend(validate_variant_profile_overrides(data, src, dst))
 
     integ = data.get("integration") or {}
     if integ.get("mode") not in INTEGRATION_MODES:
@@ -198,7 +272,7 @@ def load_creature(path: str | Path) -> dict[str, Any]:
         raise CreatureError(f"creature project not found: {p}") from exc
     except json.JSONDecodeError as exc:
         raise CreatureError(f"{p} is not valid JSON: {exc}") from exc
-    return data
+    return migrate_creature(data)
 
 
 def save_creature(data: dict[str, Any], path: str | Path) -> Path:

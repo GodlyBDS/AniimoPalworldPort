@@ -5,6 +5,7 @@ import pytest
 from aniimo_pal.cli import EXIT_CHECK_FAILED, EXIT_OK, main
 from aniimo_pal.creature.model import new_creature, validate_creature
 from aniimo_pal.creature.profile import effective_profile, profile_warnings
+from aniimo_pal.creature.variants import shiny_appearances
 from aniimo_pal.errors import ConfigError
 from aniimo_pal.systems import bundled_system, load_system, parse_system
 
@@ -14,8 +15,11 @@ DST = bundled_system("palworld")
 
 def _creature():
     c = new_creature("aniimo_test", "Test")
-    c["variants"]["shiny"] = {"enabled": True, "spawn_probability": 0.002}
-    c["variants"]["prismana"] = {"enabled": True, "spawn_probability": 0.0005}
+    v = c["variants"]
+    v["forms"]["prismana"]["enabled"] = True
+    v["shiny"] = {"enabled": True, "appearances": shiny_appearances(12)}
+    v["rarity"]["wild"] = {"prismana_probability": 0.0002, "shiny_probability": 0.002}
+    v["rarity"]["egg"] = {"prismana_probability": 0.0, "shiny_probability": 0.002}
     c["source_profile"] = {
         "system": SRC.ref(),
         "stats": {"hp": {"value": 80, "provenance": "verified", "source": "cab-x:12.m_Hp"},
@@ -76,23 +80,38 @@ def test_profile_errors(mutate, needle):
 
 def test_variants_inherit_and_override():
     c = _creature()
-    assert effective_profile(c, "shiny") == effective_profile(c, "normal")
-    c["variants"]["prismana"]["profile_overrides"] = {
+    assert effective_profile(c, shiny=True) == effective_profile(c)
+    c["variants"]["forms"]["prismana"]["profile_overrides"] = {
         "provenance": "verified",
         "source_profile": {"elements": [{"id": "earth", "provenance": "verified"}, {"id": "light", "provenance": "verified"}]},
         "translation": {"elements": [{"id": "ground", "from": ["earth"], "method": "user"}],
                         "unmapped_elements": ["light"]},
     }
     assert validate_creature(c, SRC, DST) == []
-    eff = effective_profile(c, "prismana")
+    eff = effective_profile(c, form="prismana")
     assert [e["id"] for e in eff["source_profile"]["elements"]] == ["earth", "light"]
     assert eff["source_profile"]["stats"] == c["source_profile"]["stats"]  # stats inherited unchanged
-    assert [e["id"] for e in effective_profile(c, "normal")["source_profile"]["elements"]] == ["earth", "wind"]
+    assert effective_profile(c, form="prismana", shiny=True) == eff  # Shiny inherits (no override)
+    assert [e["id"] for e in effective_profile(c)["source_profile"]["elements"]] == ["earth", "wind"]
+
+
+def test_regional_override_layers_before_prismana():
+    c = _creature()
+    c["variants"]["regions"]["forms"] = [{
+        "id": "snow", "biomes": ["snowfield"], "provenance": "verified",
+        "profile_overrides": {"provenance": "verified",
+                              "source_profile": {"stats": {"hp": {"value": 95, "provenance": "verified"}}}}}]
+    c["variants"]["forms"]["prismana"]["profile_overrides"] = {
+        "provenance": "user", "source_profile": {"stats": {"atk": {"value": 110, "provenance": "user"}}}}
+    assert validate_creature(c, SRC, DST) == []
+    eff = effective_profile(c, region="snow", form="prismana", shiny=True)["source_profile"]["stats"]
+    assert eff["hp"]["value"] == 95 and eff["atk"]["value"] == 110
+    assert effective_profile(c)["source_profile"]["stats"]["hp"]["value"] == 80
 
 
 @pytest.mark.parametrize("override,needle", [
     ({"provenance": "inferred"}, "needs provenance"),
-    ({"provenance": "user", "spawn_probability": 0.5}, "unexpected keys"),
+    ({"provenance": "user", "shiny_probability": 0.5}, "unexpected keys"),
     ({"provenance": "user", "translation": {"stats": {"hp": {"value": 1, "method": "user", "spawn_probability": 1}}}},
      "do not belong"),
     ({"provenance": "user", "translation": {"work": [{"id": "mining", "level": 99, "method": "user"}]}},
@@ -107,13 +126,13 @@ def test_variant_override_errors(override, needle):
 
 def test_normal_cannot_override():
     c = _creature()
-    c["variants"]["normal"]["profile_overrides"] = {"provenance": "user"}
-    assert any("base profile" in e for e in validate_creature(c, SRC, DST))
+    c["variants"]["forms"]["normal"]["profile_overrides"] = {"provenance": "user"}
+    assert any("base" in e for e in validate_creature(c, SRC, DST))
 
 
 def test_warnings():
     c = _creature()
-    c["variants"]["prismana"]["profile_overrides"] = {
+    c["variants"]["forms"]["prismana"]["profile_overrides"] = {
         "provenance": "user", "translation": {"work": [{"id": "mining", "level": DST.work_level_max,
                                                        "from": ["earth_job"], "method": "user"}]}}
     warnings = profile_warnings(c, SRC, DST)
@@ -129,7 +148,7 @@ def test_warnings():
 def test_profile_is_independent_of_rarity_and_combat():
     c = _creature()
     before = copy.deepcopy(c["source_profile"]), copy.deepcopy(c["translation"])
-    c["variants"]["shiny"]["spawn_probability"] = 0.01
+    c["variants"]["rarity"]["wild"]["shiny_probability"] = 0.004
     c["combat"]["profiles"] = ["partner_skill"]
     assert validate_creature(c, SRC, DST) == []
     assert (c["source_profile"], c["translation"]) == before

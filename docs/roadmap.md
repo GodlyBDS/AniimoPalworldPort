@@ -8,13 +8,21 @@
 | 1b | Creature project model (`creature.json`) + rare-variant reference semantics | **Done** |
 | 2 | Tool adapters: UnityPy object inventory, AssetRipper headless export, UnityPy extraction (PNG/OBJ/JSON) | **Done** (synthetic data; real AssetRipper build exercised) |
 | 3 | Creature catalog + association engine (dependency graph, variants, skeleton, animation linking, evidence/provenance, review/confirm workflow, reusable rules) | **Done** (synthetic data) |
+| 3b | **Identity model** (species, stage, regional form, Normal/Prismana, standard/12 Shiny) with independent form + Shiny rolls, wild/egg rarity, computed Prismana-Shiny odds, biome-driven regional forms (creature schema 0.3.0, auto-migration) | **Done** (reference semantics + validation; regional detection from real data pending) |
 | 4 | Conversion via Blender: GLB→FBX, axis/scale, skin check, bone rename/retarget, Unity `.anim`→FBX animation, texture/material maps; first editor (Blender add-on) | Next |
 | 5 | UE 5.1 Python import script + Palworld mod scaffold; **replace mode** for one test creature | Planned |
-| 6 | **New-Pal mode**: data rows (PalSchema), spawners, variants as separate rows, persistence checks | Planned, needs research |
+| 6 | **New-Pal mode**: data rows (PalSchema), biome spawners for regional forms, form/appearance identity persistence (capture, storage, save/load, breeding inheritance), in-game rarity matching the reference roller | Planned, needs research |
 | 7 | **Combat translation + in-game testing**: combat discovery (events, controller states, skill data), reusable combat templates, **Ultimate → Partner Skill** framework, AI usage rules, combat validation | Planned, starts with a research spike (architecture §9) |
 | 8 | **Stats, element & work-suitability translation**: data-table discovery on real data, verified system definitions, normalisation + balancing presets (Faithful / Vanilla Balanced / Custom), element and work mapping tables, variant-specific verified differences | Planned; schema, vocabularies and validation already in place (architecture §10) |
 | 9 | Studio GUI (guided workflow, 3D preview, association review, variant, combat, stats and work panels, validation report) | Planned |
 | 10 | Mod packs, compatibility checks, distributable build | Planned |
+
+Regional forms are added step by step: catalog detection when real data is
+available (rule keywords plus verified evidence only, never invented),
+per-region conversion in M4, biome mapping and spawning in M6, and the editor
+panel in M9. The 12 Shiny appearances are likewise only enabled for appearances
+that exist in the source data. Unofficial appearances are never generated or
+presented as authentic.
 
 Combat translation (M7) only starts once extraction and conversion
 (M4–M6) work reliably on real creatures. Its data shape is already reserved and
@@ -34,6 +42,8 @@ animation events) without migrations.
 | Creature workflow: from catalog, auto-confirm verified, review/associate, status transitions | `tests/test_workflow.py` |
 | UnityPy extraction: correct PNG pixels per variant, OBJ geometry, material → texture file links, clip events, skeleton JSON | `tests/test_workflow.py` |
 | AssetRipper adapter protocol (launch, form encoding, completion markers, timeouts, startup failures) | Fake server in CI (`tests/fake_assetripper.py`) **and** a real AssetRipper build (master @ beeb50e) via `ASSETRIPPER_PATH=… pytest -k real` |
+| Independent form/Shiny rolls, exact combined odds, wild vs egg contexts, equal-weight appearances, regional restrictions, biome → regional form, no extra copies, policy errors/warnings, 0.1/0.2 → 0.3 migration | `tests/test_rarity.py`, `tests/test_creature.py` |
+| Catalog detects Prismana and Shiny independently (Prismana Shiny prefabs), numbers Shiny appearances, scopes assets by form/appearance | `tests/test_catalog.py` |
 | Combat section schema (multi-phase abilities, Ultimate → Partner Skill default, provenance) | `tests/test_creature.py` |
 | Stats/elements/work schema: vocabulary checks against system definitions, unmapped elements handled explicitly, work-level ranges, variant inheritance and overrides, rarity/combat kept out | `tests/test_profile.py` |
 | TextAsset description + `objects` search (data-table discovery) | `tests/test_inventory.py` |

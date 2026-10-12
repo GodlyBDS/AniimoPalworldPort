@@ -1,25 +1,30 @@
 import json
-import random
 
 import pytest
 
 from aniimo_pal.cli import EXIT_CHECK_FAILED, EXIT_OK, EXIT_USAGE, main
-from aniimo_pal.creature import load_creature, new_creature, roll_variant, save_creature, validate_creature
+from aniimo_pal.creature import load_creature, migrate_creature, new_creature, save_creature, validate_creature
 from aniimo_pal.creature.model import CreatureError, creature_path
-from aniimo_pal.creature.variants import variant_probabilities
+from aniimo_pal.creature.variants import shiny_appearances
 
 SHA = "a" * 64
 
 
-def _rare(shiny=0.01, prismana=0.001):
+def _rare(shiny=0.01, prismana=0.001, egg_shiny=0.01, egg_prismana=0.0, n_apps=12):
     c = new_creature("aniimo_test", "Test")
-    c["variants"]["shiny"] = {"enabled": True, "spawn_probability": shiny}
-    c["variants"]["prismana"] = {"enabled": True, "spawn_probability": prismana}
+    v = c["variants"]
+    v["forms"]["prismana"]["enabled"] = prismana > 0
+    v["shiny"] = {"enabled": True, "appearances": shiny_appearances(n_apps)}
+    v["rarity"]["wild"] = {"prismana_probability": prismana, "shiny_probability": shiny}
+    v["rarity"]["egg"] = {"prismana_probability": egg_prismana, "shiny_probability": egg_shiny}
     return c
 
 
 def test_new_creature_is_valid():
-    assert validate_creature(new_creature("aniimo_test", "Test")) == []
+    c = new_creature("aniimo_test", "Test")
+    assert validate_creature(c) == []
+    assert c["schema_version"] == "0.3.0" and c["evolution"] is None
+    assert c["variants"]["regions"] == {"forms": [], "inheritance": None}
 
 
 def test_bad_id_rejected():
@@ -27,23 +32,26 @@ def test_bad_id_rejected():
         new_creature("Bad Id", "x")
 
 
+def _asset(**kw):
+    return dict({"ref": {"path": "a", "sha256": SHA}, "role": "texture", "association": "proposed"}, **kw)
+
+
 @pytest.mark.parametrize("mutate,needle", [
-    (lambda c: c["variants"]["normal"].update(enabled=False), "normal must be enabled"),
-    (lambda c: c["variants"]["shiny"].update(enabled=True, spawn_probability=0), "spawn_probability is 0"),
-    (lambda c: c["variants"]["shiny"].update(spawn_probability=0.1), "disabled but has a non-zero"),
-    (lambda c: c["variants"]["shiny"].update(enabled=True, spawn_probability=1.5), "in [0, 1]"),
-    (lambda c: c["variants"].pop("prismana"), "exactly"),
+    (lambda c: c["variants"]["forms"]["normal"].update(enabled=False), "normal must be enabled"),
+    (lambda c: c["variants"]["forms"].pop("prismana"), "exactly"),
     (lambda c: c.update(status="done"), "status"),
     (lambda c: c["integration"].update(mode="merge"), "integration.mode"),
     (lambda c: c.update(status="configured"), "replace_target"),
     (lambda c: c["assets"].append({"ref": {"path": "a.bundle"}, "role": "mesh", "association": "confirmed"}),
      "must pin ref.sha256"),
-    (lambda c: c["assets"].append({"ref": {"path": "a", "sha256": SHA}, "role": "hat", "association": "proposed"}),
-     "role"),
-    (lambda c: c["assets"].append({"ref": {"path": "a", "sha256": SHA}, "role": "texture",
-                                   "variant": "shiny", "association": "proposed"}), "disabled variant"),
-    (lambda c: c["assets"].extend([{"ref": {"path": "a", "sha256": SHA}, "role": "mesh", "association": "proposed"}] * 2),
-     "duplicates"),
+    (lambda c: c["assets"].append(_asset(role="hat")), "role"),
+    (lambda c: c["assets"].append(_asset(form="prismana")), "disabled Prismana"),
+    (lambda c: c["assets"].append(_asset(appearance="shiny_01")), "Shiny"),
+    (lambda c: c["assets"].append(_asset(form="golden")), "form must be"),
+    (lambda c: c["assets"].append(_asset(region="snow")), "regional form id"),
+    (lambda c: c["assets"].extend([_asset(role="mesh")] * 2), "duplicates"),
+    (lambda c: c.update(evolution={"stage": 0, "provenance": "user"}), "evolution.stage"),
+    (lambda c: c.update(evolution={"stage": 1, "next": ["Bad"], "provenance": "user"}), "evolution.next"),
 ])
 def test_validation_errors(mutate, needle):
     c = new_creature("aniimo_test", "Test")
@@ -52,50 +60,21 @@ def test_validation_errors(mutate, needle):
     assert any(needle in e for e in errors), errors
 
 
-def test_combined_rare_probability_cannot_exceed_one():
-    errors = validate_creature(_rare(shiny=0.7, prismana=0.6))
-    assert any("exceeds 1" in e for e in errors)
-
-
-def test_roll_partitions_single_draw():
-    c = _rare(shiny=0.25, prismana=0.1)["variants"]
-    assert roll_variant(c, u=0.0) == "prismana"
-    assert roll_variant(c, u=0.0999) == "prismana"
-    assert roll_variant(c, u=0.1) == "shiny"
-    assert roll_variant(c, u=0.3499) == "shiny"
-    assert roll_variant(c, u=0.35) == "normal"
-    assert roll_variant(c, u=0.999999) == "normal"
-    with pytest.raises(ValueError):
-        roll_variant(c, u=1.0)
-
-
-def test_disabled_variants_never_roll():
-    c = new_creature("aniimo_test", "Test")["variants"]
-    assert {roll_variant(c, u=u / 100) for u in range(100)} == {"normal"}
-
-
-def test_roll_frequencies_match_configuration():
-    variants = _rare(shiny=0.02, prismana=0.005)["variants"]
-    rng = random.Random(42)
-    n = 200_000
-    counts = {"normal": 0, "shiny": 0, "prismana": 0}
-    for _ in range(n):
-        counts[roll_variant(variants, rng=rng)] += 1  # exactly one outcome per event
-    assert sum(counts.values()) == n
-    probs = variant_probabilities(variants)
-    for name, p in probs.items():
-        sigma = (p * (1 - p) / n) ** 0.5
-        assert abs(counts[name] / n - p) < 5 * sigma + 1e-9, (name, counts[name])
+def test_evolution_link_valid():
+    c = new_creature("aniimo_helmwhelp", "Helmwhelp")
+    c["evolution"] = {"line": "jawling", "stage": 2, "previous": ["aniimo_jawling"], "next": ["aniimo_infergon"],
+                      "provenance": "inferred"}
+    assert validate_creature(c) == []
 
 
 def test_save_load_roundtrip_and_refuse_invalid(tmp_path):
     c = _rare()
     path = save_creature(c, creature_path(tmp_path, c["id"]))
     assert load_creature(path) == c
-    c["variants"]["normal"]["enabled"] = False
+    c["variants"]["forms"]["normal"]["enabled"] = False
     with pytest.raises(CreatureError):
         save_creature(c, path)
-    assert load_creature(path)["variants"]["normal"]["enabled"] is True
+    assert load_creature(path)["variants"]["forms"]["normal"]["enabled"] is True
 
 
 def test_cli_creature_flow(tmp_path, capsys):
@@ -105,15 +84,15 @@ def test_cli_creature_flow(tmp_path, capsys):
     assert main(["creature", "init", str(ws), "--id", "aniimo_test", "--name", "Test"]) == EXIT_USAGE
     assert main(["creature", "validate", str(path)]) == EXIT_OK
 
-    data = json.loads(path.read_text())
-    data["variants"]["shiny"] = {"enabled": True, "spawn_probability": 0.01}
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(_rare(shiny=0.01, prismana=0.001)))
     capsys.readouterr()
-    assert main(["creature", "roll", str(path), "--n", "10000", "--seed", "1"]) == EXIT_OK
+    assert main(["creature", "roll", str(path), "--n", "20000", "--seed", "1"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "shiny" in out and "configured 0.010000" in out
+    assert "Prismana Shiny  exact 0.00001000" in out and "1 in 100,000" in out
+    assert "[wild]" in out and "[egg]" in out
 
-    data["variants"]["normal"]["enabled"] = False
+    data = json.loads(path.read_text())
+    data["variants"]["forms"]["normal"]["enabled"] = False
     path.write_text(json.dumps(data))
     assert main(["creature", "validate", str(path)]) == EXIT_CHECK_FAILED
 
@@ -182,15 +161,52 @@ def test_variant_combat_overrides_need_verified_or_user():
     c["variants"]["shiny"]["combat_overrides"] = {"provenance": "inferred"}
     assert any("combat_overrides" in e for e in validate_creature(c))
     c["variants"]["shiny"]["combat_overrides"] = {"provenance": "user"}
+    c["variants"]["forms"]["prismana"]["combat_overrides"] = {"provenance": "verified"}
     assert validate_creature(c) == []
-    c["variants"]["normal"]["combat_overrides"] = {"provenance": "user"}
+    c["variants"]["forms"]["normal"]["combat_overrides"] = {"provenance": "user"}
     assert any("base configuration" in e for e in validate_creature(c))
 
 
-def test_schema_v010_documents_still_validate():
-    c = new_creature("aniimo_test", "Test")
-    c["schema_version"] = "0.1.0"
-    del c["combat"], c["skeleton"]
+def _v02_document():
+    return {
+        "schema": "aniimo-pal/creature", "schema_version": "0.2.0", "id": "aniimo_old", "display_name": "Old",
+        "status": "draft", "source": {}, "integration": {"mode": "replace", "replace_target": None},
+        "variants": {"normal": {"enabled": True},
+                     "shiny": {"enabled": True, "spawn_probability": 0.002,
+                               "profile_overrides": {"provenance": "user"}},
+                     "prismana": {"enabled": True, "spawn_probability": 0.0005}},
+        "assets": [_asset(variant="shiny"), _asset(variant="prismana", role="material"),
+                   _asset(variant="shared", role="mesh")],
+        "prefabs": [{"object": "c:1", "name": "Old_Shiny", "variant": "shiny"}],
+    }
+
+
+def test_migration_from_v02():
+    old = _v02_document()
+    new = migrate_creature(old)
+    assert old["schema_version"] == "0.2.0"  # input untouched
+    assert new["schema_version"] == "0.3.0"
+    v = new["variants"]
+    assert v["forms"]["prismana"]["enabled"] and v["shiny"]["enabled"]
+    assert [a["id"] for a in v["shiny"]["appearances"]] == ["shiny_01"]
+    assert v["rarity"]["wild"] == {"prismana_probability": 0.0005, "shiny_probability": 0.002}
+    assert v["rarity"]["egg"] == {"prismana_probability": 0.0, "shiny_probability": 0.002}
+    assert v["shiny"]["profile_overrides"] == {"provenance": "user"}
+    assert [(a["form"], a["appearance"]) for a in new["assets"]] == [
+        ("normal", "shiny_01"), ("prismana", "standard"), ("shared", "any")]
+    assert new["prefabs"][0]["appearance"] == "shiny_01"
+    assert "migrated-from-0.2.0" in new["history"][-1]["action"]
+    assert validate_creature(old) == []  # old documents validate via in-memory migration
+
+
+def test_schema_v010_documents_still_validate(tmp_path):
+    c = {"schema": "aniimo-pal/creature", "schema_version": "0.1.0", "id": "aniimo_test", "display_name": "T",
+         "status": "draft", "source": {}, "assets": [], "integration": {"mode": "replace"},
+         "variants": {"normal": {"enabled": True}, "shiny": {"enabled": False, "spawn_probability": 0.0},
+                      "prismana": {"enabled": False, "spawn_probability": 0.0}}}
     assert validate_creature(c) == []
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps(c))
+    assert load_creature(p)["schema_version"] == "0.3.0"
     c["schema_version"] = "1.0.0"
     assert any("schema_version" in e for e in validate_creature(c))

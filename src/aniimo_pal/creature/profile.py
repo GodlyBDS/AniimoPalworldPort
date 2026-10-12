@@ -16,8 +16,11 @@ Both sections record the game-system definition (id + version) they use, and
 vanilla_balanced | custom) and its rules version. Rarity (``variants.*.spawn_probability``)
 and combat (``combat``) live elsewhere and must never appear here.
 
-Variants inherit the base profile. ``variants.<shiny|prismana>.profile_overrides``
-may override parts of it, with provenance ``verified`` or ``user`` only.
+Variants inherit the base profile. Overrides may sit on a regional form
+(``variants.regions.forms[].profile_overrides``), the Prismana form
+(``variants.forms.prismana.profile_overrides``) and Shiny
+(``variants.shiny.profile_overrides``), applied in that order, with provenance
+``verified`` or ``user`` only.
 
 This module validates structure and vocabulary. It contains no conversion
 formulas (see docs/architecture.md §10).
@@ -32,7 +35,8 @@ from aniimo_pal.systems import GameSystem
 
 PROVENANCE = ("verified", "inferred", "user")
 PROFILE_PRESETS = ("faithful", "vanilla_balanced", "custom")
-FORBIDDEN_IN_OVERRIDES = {"spawn_probability", "enabled", "combat", "combat_overrides"}
+FORBIDDEN_IN_OVERRIDES = {"spawn_probability", "prismana_probability", "shiny_probability", "appearances",
+                          "enabled", "rarity", "combat", "combat_overrides"}
 
 
 def _num(v: Any) -> bool:
@@ -208,30 +212,53 @@ def deep_merge(base: Any, override: Any) -> Any:
     return copy.deepcopy(override)
 
 
-def effective_profile(creature: dict[str, Any], variant: str) -> dict[str, Any]:
-    """Source profile + translation for one variant (base, then that variant's overrides)."""
-    base = {"source_profile": creature.get("source_profile") or {}, "translation": creature.get("translation") or {}}
-    if variant == "normal":
-        return copy.deepcopy(base)
-    ov = ((creature.get("variants") or {}).get(variant) or {}).get("profile_overrides") or {}
-    merged = copy.deepcopy(base)
-    for section in ("source_profile", "translation"):
-        if section in ov:
-            merged[section] = deep_merge(merged[section], ov[section])
+def effective_profile(creature: dict[str, Any], region: str = "base", form: str = "normal",
+                      shiny: bool = False) -> dict[str, Any]:
+    """Source profile + translation for one identity: base, then region, Prismana and Shiny overrides."""
+    merged = {"source_profile": copy.deepcopy(creature.get("source_profile") or {}),
+              "translation": copy.deepcopy(creature.get("translation") or {})}
+    variants = creature.get("variants") or {}
+    layers = []
+    if region != "base":
+        layers += [r for r in ((variants.get("regions") or {}).get("forms") or []) if r.get("id") == region]
+    if form == "prismana":
+        layers.append(((variants.get("forms") or {}).get("prismana")) or {})
+    if shiny:
+        layers.append(variants.get("shiny") or {})
+    for layer in layers:
+        ov = layer.get("profile_overrides") or {}
+        for section in ("source_profile", "translation"):
+            if section in ov:
+                merged[section] = deep_merge(merged[section], ov[section])
     return merged
+
+
+def _identities(creature: dict[str, Any]) -> list[tuple[str, str, bool]]:
+    variants = creature.get("variants") or {}
+    regions = ["base"] + [r.get("id") for r in ((variants.get("regions") or {}).get("forms") or [])
+                          if isinstance(r, dict)]
+    forms = ["normal"] + (["prismana"] if ((variants.get("forms") or {}).get("prismana") or {}).get("enabled") else [])
+    shinies = [False] + ([True] if (variants.get("shiny") or {}).get("enabled") else [])
+    return [(r, f, s) for r in regions for f in forms for s in shinies]
 
 
 def validate_variant_profile_overrides(creature: dict[str, Any], src: GameSystem | None,
                                        dst: GameSystem | None) -> list[str]:
+    from aniimo_pal.creature.combat import override_locations
+
     errors: list[str] = []
-    for name, v in (creature.get("variants") or {}).items():
-        ov = v.get("profile_overrides") if isinstance(v, dict) else None
+    variants = creature.get("variants") or {}
+    if not isinstance(variants.get("forms"), dict):
+        return errors
+    if "profile_overrides" in (variants["forms"].get("normal") or {}):
+        errors.append("variants.forms.normal: the normal form is the base profile and cannot override it")
+    has_override = False
+    for where_base, block in override_locations(variants):
+        ov = block.get("profile_overrides")
         if ov is None:
             continue
-        where = f"variants.{name}.profile_overrides"
-        if name == "normal":
-            errors.append(f"{where}: the normal variant is the base profile and cannot override it")
-            continue
+        has_override = True
+        where = f"{where_base}.profile_overrides"
         if not isinstance(ov, dict) or ov.get("provenance") not in ("verified", "user"):
             errors.append(f"{where} needs provenance 'verified' or 'user'")
             continue
@@ -254,10 +281,15 @@ def validate_variant_profile_overrides(creature: dict[str, Any], src: GameSystem
         leaked = walk({k: ov.get(k) for k in ("source_profile", "translation")})
         if leaked:
             errors.append(f"{where}: {sorted(leaked)} do not belong in a stat profile")
-        eff = effective_profile(creature, name)
-        errors += [f"{where} -> {e}" for e in validate_source_profile(eff["source_profile"], src)]
-        errors += [f"{where} -> {e}" for e in validate_translation(eff["translation"], eff["source_profile"], dst)]
-    return errors
+    if has_override and not errors:
+        for region, form, shiny in _identities(creature):
+            if (region, form, shiny) == ("base", "normal", False):
+                continue
+            eff = effective_profile(creature, region, form, shiny)
+            label = f"identity {region}/{form}/{'shiny' if shiny else 'standard'}"
+            errors += [f"{label} -> {e}" for e in validate_source_profile(eff["source_profile"], src)]
+            errors += [f"{label} -> {e}" for e in validate_translation(eff["translation"], eff["source_profile"], dst)]
+    return sorted(set(errors), key=errors.index)
 
 
 def profile_warnings(creature: dict[str, Any], src: GameSystem | None, dst: GameSystem | None) -> list[str]:
@@ -279,9 +311,11 @@ def profile_warnings(creature: dict[str, Any], src: GameSystem | None, dst: Game
         if isinstance(entry, dict) and not entry.get("from") and entry.get("method") != "user":
             warnings.append(f"translated stat {key!r} has no source stats in 'from'")
     if dst is not None:
-        for name in ("shiny", "prismana"):
-            eff = effective_profile(creature, name)
-            ov = ((creature.get("variants") or {}).get(name) or {}).get("profile_overrides")
+        variants = creature.get("variants") or {}
+        for name, form, shiny, block in (("prismana", "prismana", False, (variants.get("forms") or {}).get("prismana")),
+                                         ("shiny", "normal", True, variants.get("shiny"))):
+            eff = effective_profile(creature, "base", form, shiny)
+            ov = (block or {}).get("profile_overrides")
             work = (eff["translation"] or {}).get("work") or []
             if ov and work and all(w.get("level") == dst.work_level_max for w in work if isinstance(w, dict)):
                 warnings.append(f"{name}: every work suitability is at the maximum level; rare variants "

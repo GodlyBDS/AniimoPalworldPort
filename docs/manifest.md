@@ -87,14 +87,37 @@ provenance), `animations[]` (object, `linked_via` controller|binding-match,
 `binding_overlap` [matched, total], `role_guess` (inferred), `event_count`),
 and `warnings[]`. The `rules` used are embedded for reproducibility.
 
-## Creature project (`aniimo-pal/creature`, schema 0.2.0, may change)
+## Creature project (`aniimo-pal/creature`, schema 0.3.0, may change)
 
-0.2.0 adds (all optional, 0.1.x files remain valid): `prefabs`, `skeleton`,
+0.3.0 replaces the mutually exclusive `variants` with the identity model
+(architecture.md §6). 0.1/0.2 files are migrated automatically on load:
+
+```jsonc
+"variants": {
+  "regions": {"forms": [{"id": "snow", "name": "Snow", "biomes": ["<palworld biome id>"], "provenance": "verified",
+                         "allow_prismana": true, "appearances": null}],
+              "inheritance": null},
+  "forms": {"normal": {"enabled": true}, "prismana": {"enabled": true}},
+  "shiny": {"enabled": true, "appearances": [{"id": "shiny_01", "name": "Shiny 1", "weight": 1.0}, "… 12 total"]},
+  "rarity": {"wild": {"prismana_probability": 0.0002, "shiny_probability": 0.002},
+             "egg":  {"prismana_probability": 0.0,    "shiny_probability": 0.002},
+             "allow_guaranteed": false, "pity": null,
+             "policy": {"min_shiny_to_prismana_ratio": 2.0, "max_shiny_probability": 0.01,
+                        "expected_shiny_appearances": 12}}
+},
+"evolution": {"line": "jawling", "stage": 2, "previous": ["aniimo_jawling"], "next": ["aniimo_infergon"],
+              "provenance": "inferred"}
+```
+Assets carry `region` (`any`, `base` or a regional id), `form` (`shared`,
+`normal`, `prismana` or `unclassified`) and `appearance` (`any`, `standard`,
+`shiny` or a Shiny id) in place of 0.2's single `variant`.
+
+0.2.0 added (all optional, 0.1.x files remain valid): `prefabs`, `skeleton`,
 `notes`, `history`; per-asset `class`, `name`, `slot`, `provenance`
 (verified|inferred|user), `extracted`, `assetripper`; the `unclassified`
 asset variant (must be resolved before `mapped`); the reserved `combat`
 section (see architecture.md §9); and `source_profile` / `translation` /
-`variants.*.profile_overrides` for stats, elements and work (architecture.md
+`profile_overrides` (on regional forms, the Prismana form and Shiny) for stats, elements and work (architecture.md
 §10). Example:
 
 ```jsonc
@@ -126,15 +149,11 @@ Created with `aniimo-pal creature init <workspace> --id <id> --name <name>`.
   "assets": [
     {"ref": {"path": "…/creature_a.bundle", "sha256": "…", "object": "optional object path/name in container"},
      "role": "mesh",                      // mesh|skeleton|texture|material|animation|icon|audio|other
-     "variant": "shared",                 // shared|normal|shiny|prismana
+     "region": "any", "form": "shared", "appearance": "any",   // identity scope (0.3.0)
      "association": "proposed",           // proposed|confirmed|rejected (confirmed requires sha256)
      "evidence": ["dependency:prefab", "name-stem"]}
   ],
-  "variants": {
-    "normal":   {"enabled": true},
-    "shiny":    {"enabled": true, "spawn_probability": 0.002},
-    "prismana": {"enabled": true, "spawn_probability": 0.0005}
-  },
+  "variants": "(0.3.0 identity model, see above)",
   "integration": {"mode": "replace", "replace_target": null, "notes": ""},
   "combat": {
     "profiles": ["ai_companion"],

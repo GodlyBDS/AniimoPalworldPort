@@ -5,7 +5,8 @@ Aniimo (reported to be a customised Unity engine) into **Palworld**
 (Unreal Engine 5.1) mods, one creature at a time.
 
 The goal is a "creature porting studio": pick an Aniimo, extract, auto-map,
-convert, inspect and fix, configure Normal/Shiny/Prismana variants and combat
+convert, inspect and fix, configure regional forms, Normal/Prismana forms and the
+12 Shiny appearances (independent rare rolls; Prismana Shiny is the rarest), combat
 (the Aniimo Ultimate becomes the Pal's Partner Skill), validate, and export a
 Palworld mod. See [docs/architecture.md](docs/architecture.md).
 
@@ -54,7 +55,7 @@ aniimo-pal creature export-assetripper ws/creatures/aniimo_foxlet/creature.json 
 | `scan`, `summary`, `validate`, `diff`, `verify`, `formats` | File inventory manifest; checks; game-update diffs |
 | `inventory` | Unity object index (`objects.json`) via UnityPy |
 | `catalog build / list / show` | Creature catalog with automatic asset association |
-| `creature init / review / associate / validate / roll` | Resumable per-creature projects; rare-variant rate simulation |
+| `creature init / review / associate / validate / roll` | Resumable per-creature projects; exact wild/egg odds per regional form (`roll --biome`) |
 | `creature extract` | UnityPy export of confirmed assets (source hashes re-checked) |
 | `creature export-assetripper` | Headless AssetRipper export, mapped back to the creature's assets |
 | `objects` | Search the object index, e.g. for stat, element or job data tables |
