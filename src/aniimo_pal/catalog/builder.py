@@ -147,7 +147,8 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
             skins.append({"renderer": r["id"], "mesh": mesh["id"], "mesh_name": mesh.get("name"),
                           "renderer_path": path_of_transform.get((h.go_transform.get(go["id"]) or {}).get("id")),
                           "bones": [ordered.get(i) for i in range(max(ordered) + 1)] if ordered else [],
-                          "root_bone": path_of_transform.get(root_bone["id"]) if root_bone else None})
+                          "root_bone": path_of_transform.get(root_bone["id"]) if root_bone else None,
+                          "materials": [m["id"] for m in idx.refs(r, "m_Materials")]})
     if not meshes:
         return None
 
@@ -242,8 +243,14 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
                     uf.union(a, b)
                     group_evidence[b].add("same-game-id")
     mesh_owner: dict[str, int] = {}
+    mesh_users: dict[str, int] = defaultdict(int)
+    for c in candidates:
+        for m in c["meshes"]:
+            mesh_users[m["id"]] += 1
     for i, c in enumerate(candidates):
         for m in c["meshes"]:
+            if mesh_users[m["id"]] > rules.max_shared_mesh_prefabs:
+                continue
             if m["id"] in mesh_owner:
                 uf.union(i, mesh_owner[m["id"]])
                 group_evidence[i].add("shared-mesh")
@@ -489,6 +496,10 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
                         "container": root.get("container"), "region": BASE_REGION,
                         "form": form, "appearance": "shiny" if hits.get("shiny") else STANDARD,
                         "game_form_index": game_form,
+                        # Per skinned part: its mesh and the materials this prefab's renderer uses (textures
+                        # differ per variant even when the mesh is shared).
+                        "parts": [{"mesh": s["mesh"], "mesh_name": s["mesh_name"], "materials": s["materials"]}
+                                  for s in c["skins"]],
                         "variant_provenance": "inferred" if hits or game_form else "default",
                         "variant_evidence": evidence, "_cand": c})
 

@@ -155,3 +155,22 @@ def test_unassigned_sample_prefers_files_of_this_creature():
     assert _related_unassigned(files, {"x/done.png"}, ["M_Parmon_10184_Body_-1771000540"]) == [
         "x/Assets/res/10184/M_Parmon_10184.glb"]
     assert _related_unassigned(files, set(), ["Nothing_Here"])[:1] == ["x/Assets/Shader/Hidden_Blit.json"]
+
+
+def test_remove_tree_handles_read_only_files_and_deep_paths(tmp_path):
+    import os
+    import stat
+
+    from aniimo_pal.extract import remove_tree
+
+    deep = tmp_path / "out"
+    leaf = deep
+    for i in range(30):  # > 260 characters in total
+        leaf = leaf / f"Res_Export_Character_{i:02d}"
+    leaf.mkdir(parents=True)
+    f = leaf / "x.asset"
+    f.write_text("x")
+    os.chmod(f, stat.S_IREAD)
+    assert len(str(f)) > 260
+    remove_tree(deep)
+    assert not deep.exists()

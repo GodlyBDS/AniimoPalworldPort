@@ -5,7 +5,8 @@ or through the ``bpy`` module. Only uses bpy and the standard library.
 
 Job JSON keys:
   fbx            converted creature FBX (rig + mesh + one action per clip)
-  variants       [{"label": "Normal", "texture": "path/to/albedo.png" | null}, ...]
+  variants       [{"label": "Normal", "texture": "path/to/albedo.png" | null,
+                   "part_textures": {"<mesh name>": "path/to/albedo.png"}}, ...]
   output_blend   .blend file to write (open it in Blender to play/inspect)
   report         (optional) JSON report path
 
@@ -124,9 +125,13 @@ def run(job: dict) -> dict:
         holder.location.x = spacing * i
         a.parent = holder
         holders.append(holder)
+        part_textures = var.get("part_textures") or {}
         for m in ms:
+            # Each part (body, eyes, ...) gets its own material's texture; else the variant's main texture.
+            tex = next((t for name, t in sorted(part_textures.items(), key=lambda kv: -len(kv[0]))
+                        if m.name.startswith(name) or m.data.name.startswith(name)), None)
             m.data.materials.clear()
-            m.data.materials.append(mat)
+            m.data.materials.append(variant_material(f"{var['label']}_{m.name}", tex) if tex else mat)
         curve = bpy.data.curves.new(f"Label_{var['label']}", "FONT")
         curve.body = var["label"]
         curve.size = max(size.z, 0.3) * 0.18

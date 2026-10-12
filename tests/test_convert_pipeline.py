@@ -93,8 +93,11 @@ def test_convert_with_simulated_assetripper_outputs(skinned_game, tmp_path):
     assert report["summary"] == {"meshes_ok": 1, "errors": 0, "clips": 1, "clip_errors": 0}
     m = report["meshes"][0]
     assert (cdir / m["fbx"]).stat().st_size > 1000
-    assert m["assembly"]["bind_pose_source"] == "mesh-bind-poses" and m["assembly"]["warnings"] == []
-    assert m["blender"]["basis"]["method"] == "expected-assetripper-basis"
+    model = report["model"]
+    assert model["status"] == "ok" and model["fbx"] == m["fbx"] and model["parts"] == 1
+    assert model["assembly"]["parts"][0]["bind_pose_source"] == "mesh-bind-poses"
+    assert model["assembly"]["warnings"] == []
+    assert model["blender"]["basis"]["method"] == "expected-assetripper-basis"
     assert m["clips"][0]["bones_driven"] == 5 and m["clips"][0]["max_head_error_m"] < 1e-6
     assert c["status"] == "converted" and mesh["converted"] == m["fbx"]
     assert json.loads((cdir / "convert/report.json").read_text())["creature"] == "aniimo_foxlet"
@@ -168,9 +171,9 @@ def test_full_cli_pipeline_with_real_assetripper(skinned_game, tmp_path, capsys)
     c = load_creature(cfile)
     assert c["status"] == "converted"
     report = json.loads((cfile.parent / "convert/report.json").read_text())
-    m = report["meshes"][0]
+    m = report["model"]
     assert m["blender"]["meshes"][0]["skinned"] and m["blender"]["meshes"][0]["unweighted_vertices"] == 0
-    assert m["clips"][0]["max_head_error_m"] < 1e-6
+    assert m["clips"][0]["max_head_error_m"] < 1e-6 and report["meshes"][0]["fbx"] == m["fbx"]
     assert main(["verify", str(ws / "m.json"), str(root)]) == EXIT_OK  # game files untouched
 
 
@@ -215,3 +218,56 @@ def test_own_mesh_glb_matches_assetripper_triangle_by_triangle(skinned_game, tmp
         return sorted(out)
 
     assert corners(tmp_path / "ours.glb") == corners(ar_glb)
+
+
+def _add_rigid_eye(b, head_leaf="Head"):
+    """An eye mesh without skin data on its own SkinnedMeshRenderer under the head bone (as in real Aniimo)."""
+    eye_mesh = ub.add_triangle_mesh(b, "Foxlet_Eye", [])
+    head_go = next(o.path_id for o in b._objects if o.class_id == 1 and o.data["m_Name"] == head_leaf)
+    head_tr = next(o for o in b._objects if o.class_id == 4 and o.data["m_GameObject"]["m_PathID"] == head_go)
+    go = b.add(1, m_Name="Eye", m_IsActive=True)
+    tr = b.add(4, m_GameObject=ub.pptr(go), m_Father=ub.pptr(head_tr.path_id), m_LocalRotation={"w": 1.0},
+               m_LocalPosition={"x": 0.0, "y": 0.05, "z": 0.05}, m_LocalScale={"x": 1.0, "y": 1.0, "z": 1.0})
+    head_tr.data["m_Children"] = list(head_tr.data.get("m_Children") or []) + [ub.pptr(tr)]
+    eye_tex = ub.add_texture(b, "Foxlet_Eye_Albedo", (20, 20, 200))
+    eye_mat = ub.add_material(b, "Foxlet_Eye_Mat", {"_MainTex": eye_tex})
+    smr = b.add(137, m_GameObject=ub.pptr(go), m_Enabled=True, m_Mesh=ub.pptr(eye_mesh), m_Bones=[],
+                m_RootBone=ub.pptr(head_tr.path_id), m_Materials=[ub.pptr(eye_mat)])
+    b.get(go)["m_Component"] = [{"component": ub.pptr(tr)}, {"component": ub.pptr(smr)}]
+
+
+def test_body_and_rigid_eyes_become_one_model(tmp_path):
+    pytest.importorskip("bpy")
+    from aniimo_pal.convert.pipeline import convert_creature
+    from aniimo_pal.convert.skin_assembly import read_glb
+    from aniimo_pal.extract import extract_creature
+
+    b = ub.SerializedBuilder()
+    ub.add_creature(b, "Foxlet", bones=list(BONES), clips=[], bone_locals=BONES)
+    _add_rigid_eye(b)
+    root = tmp_path / "game"
+    root.mkdir()
+    (root / "foxlet.bundle").write_bytes(ub.bundle(b.build(), "CAB-foxlet"))
+    cat = build_catalog(build_inventory(scan(root, ScanConfig()), root))
+    skins = cat["species"][0]["skeleton"]["skins"]
+    assert sorted(s["mesh_name"] for s in skins) == ["Foxlet_Body", "Foxlet_Eye"]
+    c = creature_from_catalog(cat, "foxlet")
+    path = save_creature(c, creature_path(tmp_path / "ws", c["id"]))
+    extract_creature(c, path.parent, root, include_proposed=True)
+    report = convert_creature(c, path.parent, include_proposed=True)
+    by_mesh = {m["mesh"]: m for m in report["meshes"]}
+    assert by_mesh["Foxlet_Eye"]["status"] == "ok" and by_mesh["Foxlet_Eye"]["attached_to"] == "Root/Hips/Spine/Head/Eye"
+    model = report["model"]
+    assert model["status"] == "ok" and model["parts"] == 2
+    assert len(model["blender"]["armatures"]) == 1 and len(model["blender"]["meshes"]) == 2
+    doc, _ = read_glb(path.parent / "convert" / c["id"] / f"{c['id']}.rigged.glb")
+    assert len(doc["skins"]) == 2 and len([n for n in doc["nodes"] if "mesh" in n]) == 2
+
+    from aniimo_pal.convert.preview import preview_job
+
+    parts = preview_job(c, path.parent)["variants"][0]["part_textures"]
+    assert parts["Foxlet_Eye"].endswith("Foxlet_Eye_Albedo.png") and parts["Foxlet_Body"].endswith("Foxlet_Albedo.png")
+    from aniimo_pal.convert.preview import build_preview
+
+    preview = build_preview(c, path.parent)
+    assert (path.parent / "preview" / "preview.blend").is_file() and [v["label"] for v in preview["variants"]] == ["Normal"]

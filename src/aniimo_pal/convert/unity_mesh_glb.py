@@ -11,6 +11,12 @@ tests): Unity -> glTF space by mirroring X (position and normal ``(-x, y, z)``),
 triangle winding reversed to keep faces outward after the mirror, UV ``v``
 flipped (``1 - v``), one primitive per submesh, and ``JOINTS_0`` /
 ``WEIGHTS_0`` holding the renderer's bone indices and weights.
+
+Real meshes also come without weights: one bone per vertex (Unity stores only
+the bone index; weight 1 is implied) or no skin data at all (e.g. eyes that
+follow their renderer's transform). The latter are written with every vertex
+on joint 0 and marked ``extras.aniimo_rigid``; conversion binds that joint to
+the renderer's own transform.
 """
 
 from __future__ import annotations
@@ -65,10 +71,25 @@ def mesh_arrays(mesh: Any) -> dict[str, Any]:
     uv0 = getattr(h, "m_UV0", None)
     if uv0 and len(uv0) == n:
         out["uv0"] = np.asarray(uv0, dtype=np.float32).reshape(n, -1)[:, :2]
-    if h.m_BoneIndices and h.m_BoneWeights and len(h.m_BoneIndices) == n:
-        out["joints"] = np.asarray(h.m_BoneIndices, dtype=np.int64).reshape(n, -1)[:, :4]
-        out["weights"] = np.asarray(h.m_BoneWeights, dtype=np.float32).reshape(n, -1)[:, :4]
+    if h.m_BoneIndices and len(h.m_BoneIndices) == n:
+        out["joints"] = _pad4(np.asarray(h.m_BoneIndices, dtype=np.int64).reshape(n, -1))
+        if h.m_BoneWeights and len(h.m_BoneWeights) == n:
+            out["weights"] = _pad4(np.asarray(h.m_BoneWeights, dtype=np.float32).reshape(n, -1))
+            out["skin_source"] = "stored-weights"
+        else:
+            # One bone per vertex: Unity stores only the bone index (no weight channel).
+            out["weights"] = np.zeros((n, 4), dtype=np.float32)
+            out["weights"][:, 0] = 1.0
+            out["skin_source"] = "single-bone"
+    else:
+        out["skin_source"] = "none"  # rigid: follows its renderer's transform
     return out
+
+
+def _pad4(a: np.ndarray) -> np.ndarray:
+    if a.shape[1] < 4:
+        a = np.concatenate([a, np.zeros((a.shape[0], 4 - a.shape[1]), dtype=a.dtype)], axis=1)
+    return a[:, :4]
 
 
 def arrays_to_glb(arrays: dict[str, Any], out_path: str | Path) -> dict[str, Any]:
@@ -87,16 +108,20 @@ def arrays_to_glb(arrays: dict[str, Any], out_path: str | Path) -> dict[str, Any
         uv[:, 1] = 1.0 - uv[:, 1]
         attributes["TEXCOORD_0"] = b.add(np.ascontiguousarray(uv, dtype=np.float32), FLOAT, "VEC2", ARRAY_BUFFER)
     skinned = "joints" in arrays
-    if skinned:
-        joints = arrays["joints"]
-        if joints.min() < 0 or joints.max() > 65535:
-            raise ToolkitError("bone index out of range for glTF JOINTS_0")
-        weights = arrays["weights"].astype(np.float32)
-        total = weights.sum(axis=1, keepdims=True)
-        weights = np.where(total > 0, weights / np.where(total > 0, total, 1), weights)
-        attributes["JOINTS_0"] = b.add(np.ascontiguousarray(joints, dtype=np.uint16), UINT16, "VEC4", ARRAY_BUFFER)
-        attributes["WEIGHTS_0"] = b.add(np.ascontiguousarray(weights, dtype=np.float32), FLOAT, "VEC4",
-                                        ARRAY_BUFFER)
+    rigid = not skinned
+    if rigid:
+        # No skin data: bind every vertex to one joint (the renderer's transform, chosen at assembly time).
+        n = arrays["positions"].shape[0]
+        arrays = dict(arrays, joints=np.zeros((n, 4), dtype=np.int64),
+                      weights=np.tile(np.array([1.0, 0, 0, 0], dtype=np.float32), (n, 1)))
+    joints = arrays["joints"]
+    if joints.min() < 0 or joints.max() > 65535:
+        raise ToolkitError("bone index out of range for glTF JOINTS_0")
+    weights = arrays["weights"].astype(np.float32)
+    total = weights.sum(axis=1, keepdims=True)
+    weights = np.where(total > 0, weights / np.where(total > 0, total, 1), weights)
+    attributes["JOINTS_0"] = b.add(np.ascontiguousarray(joints, dtype=np.uint16), UINT16, "VEC4", ARRAY_BUFFER)
+    attributes["WEIGHTS_0"] = b.add(np.ascontiguousarray(weights, dtype=np.float32), FLOAT, "VEC4", ARRAY_BUFFER)
     primitives = []
     triangles = 0
     for tris in arrays["submeshes"]:
@@ -111,12 +136,22 @@ def arrays_to_glb(arrays: dict[str, Any], out_path: str | Path) -> dict[str, Any
     if not primitives:
         raise ToolkitError(f"mesh {arrays['name']!r} has no triangles")
     doc = {"asset": {"version": "2.0", "generator": "aniimo-pal unity_mesh_glb"},
-           "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"name": arrays["name"], "mesh": 0}],
+           "scene": 0, "scenes": [{"nodes": [0]}],
+           "nodes": [{"name": arrays["name"], "mesh": 0, "extras": {"aniimo_skin_source": arrays.get(
+               "skin_source", "none" if rigid else "stored-weights"), "aniimo_rigid": rigid}}],
            "meshes": [{"name": arrays["name"], "primitives": primitives}],
            "buffers": [{"byteLength": len(b.binary)}], "bufferViews": b.views, "accessors": b.accessors}
     write_glb(out_path, doc, bytes(b.binary))
     return {"vertices": int(arrays["positions"].shape[0]), "triangles": triangles, "submeshes": len(primitives),
-            "skinned": skinned}
+            "skinned": skinned, "rigid": rigid}
+
+
+def glb_is_rigid(path: str | Path) -> bool:
+    """True if the GLB was written for a mesh without skin data (see :func:`arrays_to_glb`)."""
+    from aniimo_pal.convert.skin_assembly import read_glb
+
+    doc, _ = read_glb(path)
+    return any((n.get("extras") or {}).get("aniimo_rigid") for n in doc.get("nodes", []))
 
 
 def unity_mesh_to_glb(mesh: Any, out_path: str | Path) -> dict[str, Any]:

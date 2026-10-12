@@ -332,10 +332,16 @@ def cmd_creature_extract(args: argparse.Namespace, config: Config) -> int:
     save_creature(c, path)
     s = report["summary"]
     print(f"extracted ok={s['ok']} skipped={s['skipped']} errors={s['errors']} -> {path.parent / 'extract' / 'unitypy'}")
+    roles = {i: a["role"] for i, a in enumerate(c["assets"])}
+    fatal = 0
     for r in report["outputs"]:
         if r["status"] == "error":
-            print(f"ERROR asset {r['index']}: {r['error']}")
-    return EXIT_OK if s["errors"] == 0 else EXIT_CHECK_FAILED
+            # A mesh that cannot be read stops the pipeline; other assets (e.g. one texture in an unusual
+            # format) are reported and the rest of the creature is still usable.
+            is_fatal = roles.get(r["index"]) in ("mesh", "skeleton")
+            fatal += is_fatal
+            print(f"{'ERROR' if is_fatal else 'WARNING'} asset {r['index']} ({roles.get(r['index'])}): {r['error']}")
+    return EXIT_OK if s["ok"] and not fatal else EXIT_CHECK_FAILED
 
 
 def cmd_creature_assetripper(args: argparse.Namespace, config: Config) -> int:

@@ -182,7 +182,8 @@ class AssetRipperSession:
 
         opener = urllib.request.build_opener(_NoRedirect)
         try:
-            with opener.open(req, timeout=60) as resp:
+            # Export requests can block until AssetRipper has finished, which takes minutes for big inputs.
+            with opener.open(req, timeout=max(60.0, self.command_timeout)) as resp:
                 return resp.status
         except urllib.error.HTTPError as exc:
             if exc.code in (301, 302, 303):

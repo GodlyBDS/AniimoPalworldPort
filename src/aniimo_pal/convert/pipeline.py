@@ -1,11 +1,12 @@
 """Creature conversion: AssetRipper outputs + catalog skeleton -> rigged FBX for Unreal Engine 5.1.
 
-For each skinned mesh of the creature (catalog ``skeleton.skins``):
-  1. mesh GLB from the AssetRipper primary export (``asset.assetripper.primary``);
+For every skinned part of the creature (catalog ``skeleton.skins``: body, eyes, ...):
+  1. mesh GLB written by ``creature extract`` (else AssetRipper's primary export);
   2. bind poses from the UnityPy extract (``*.skin.json``), else the skeleton rest pose;
-  3. skin assembly -> ``convert/<mesh>/<mesh>.rigged.glb``;
-  4. Blender job -> ``convert/<mesh>/<mesh>.fbx`` with every confirmed animation clip
-     (``.anim`` from the AssetRipper project export) retargeted onto the rig.
+     parts without skin data follow their renderer's transform;
+then all parts are assembled on one skeleton -> ``convert/<creature>/<creature>.rigged.glb`` and a
+Blender job writes ``convert/<creature>/<creature>.fbx`` (one skeletal mesh) with every confirmed animation
+clip (``.anim`` from the AssetRipper project export) retargeted onto the rig.
 
 Variant materials and textures (Shiny/Prismana/regional) are applied as
 material instances during the Unreal import (milestone 5), so one rigged mesh
@@ -22,8 +23,9 @@ from typing import Any
 
 from aniimo_pal import TOOL_NAME, __version__
 from aniimo_pal.convert.blender_runner import run_job
-from aniimo_pal.convert.skin_assembly import assemble_skinned_glb, skeleton_locals
+from aniimo_pal.convert.skin_assembly import assemble_creature_glb, skeleton_locals
 from aniimo_pal.convert.unity_anim import parse_anim_file
+from aniimo_pal.convert.unity_mesh_glb import glb_is_rigid
 from aniimo_pal.errors import ToolkitError
 from aniimo_pal.manifest.io import write_json_atomic
 
@@ -61,7 +63,9 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
         except Exception as exc:  # keep converting other clips
             clip_errors.append({"index": i, "name": a.get("name"), "error": f"{type(exc).__name__}: {exc}"})
 
-    outputs = []
+    # One rigged model per creature: every skinned part (body, eyes, ...) on one shared skeleton.
+    outputs, parts = [], []
+    identity = [[1.0 if r == c else 0.0 for c in range(4)] for r in range(4)]
     for skin in skins:
         entry = by_object.get(skin["mesh"])
         if entry is None or not _usable(entry[1], include_proposed):
@@ -69,41 +73,66 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
                             "error": "mesh asset not confirmed in this creature project"})
             continue
         idx, mesh_asset = entry
+        rec: dict[str, Any] = {"mesh": mesh_asset.get("name"), "asset_index": idx, "status": "ok"}
         # Mesh GLB: the toolkit's own (written by `creature extract`), else AssetRipper's primary export.
         own = mesh_asset.get("extracted", "")
         own_glb = own[:-4] + ".glb" if own.endswith(".obj") else ""
         glbs = [own_glb] if own_glb and (creature_dir / own_glb).is_file() else []
         glbs += [f for f in (mesh_asset.get("assetripper") or {}).get("primary", []) if f.lower().endswith(".glb")]
         if not glbs:
-            outputs.append({"mesh": mesh_asset.get("name"), "status": "error",
-                            "error": "no mesh GLB: run `creature extract` (writes it) first"})
+            outputs.append(dict(rec, status="error", error="no mesh GLB: run `creature extract` (writes it) first"))
             continue
-        name = _SAFE.sub("_", mesh_asset.get("name") or f"mesh_{idx}")
-        work = creature_dir / "convert" / name
-        bind_poses = None
-        if mesh_asset.get("extracted", "").endswith(".obj"):
-            skin_json = creature_dir / (mesh_asset["extracted"][:-4] + ".skin.json")
+        joints, bind_poses = skin["bones"], None
+        if own_glb and glbs[0] == own_glb and glb_is_rigid(creature_dir / own_glb):
+            # No skin data: the part follows its renderer's transform (e.g. eyes), unless it is a placeholder.
+            if "dummy" in (mesh_asset.get("name") or "").lower():
+                outputs.append(dict(rec, status="skipped", error="placeholder mesh (no skin data, named 'dummy')"))
+                continue
+            anchor = next((p for p in (skin.get("renderer_path"), skin.get("root_bone"), *(skin["bones"] or []))
+                           if p and p in locals_), None)
+            if anchor is None:
+                outputs.append(dict(rec, status="error", error="rigid mesh: no transform in the skeleton to attach to"))
+                continue
+            joints, bind_poses = [anchor], [identity]
+            rec["attached_to"] = anchor
+        elif own.endswith(".obj"):
+            skin_json = creature_dir / (own[:-4] + ".skin.json")
             if skin_json.is_file():
                 bind_poses = json.loads(skin_json.read_text(encoding="utf-8"))["bind_poses"]
-        rec: dict[str, Any] = {"mesh": mesh_asset.get("name"), "asset_index": idx, "status": "ok"}
+        missing = [j for j in joints if j is None or j not in locals_]
+        if not joints or missing:
+            outputs.append(dict(rec, status="error", error=f"skin joints missing from the skeleton: {missing}"))
+            continue
+        parts.append({"glb": creature_dir / glbs[0], "joints": joints, "bind_poses": bind_poses})
+        outputs.append(rec)
+
+    model: dict[str, Any] | None = None
+    if parts:
+        name = _SAFE.sub("_", creature["id"])
+        work = creature_dir / "convert" / name
+        model = {"name": name, "status": "ok", "parts": len(parts)}
         try:
-            rec["assembly"] = assemble_skinned_glb(creature_dir / glbs[0], locals_, skin["bones"],
-                                                   work / f"{name}.rigged.glb", bind_poses=bind_poses,
-                                                   root_name=creature["id"])
+            model["assembly"] = assemble_creature_glb(parts, locals_, work / f"{name}.rigged.glb",
+                                                      root_name=creature["id"])
             report = run_job({"input_model": str(work / f"{name}.rigged.glb"), "output_fbx": str(work / f"{name}.fbx"),
                               "report": str(work / "blender-report.json"), "unity_skeleton": locals_,
                               "bone_map": bone_map or {}, "clips": clips}, blender=blender)
-            rec["fbx"] = f"convert/{name}/{name}.fbx"
-            rec["blender"] = {k: report.get(k) for k in ("blender_version", "basis", "meshes", "armatures", "bounds",
-                                                         "warnings")}
-            rec["clips"] = [{k: c.get(k) for k in ("name", "frames", "bones_driven", "unknown_paths",
-                                                     "unmapped_paths", "max_head_error_m")} for c in report["clips"]]
-            assets[idx]["converted"] = rec["fbx"]
+            model["fbx"] = f"convert/{name}/{name}.fbx"
+            model["blender"] = {k: report.get(k) for k in ("blender_version", "basis", "meshes", "armatures",
+                                                           "bounds", "warnings")}
+            model["clips"] = [{k: c.get(k) for k in ("name", "frames", "bones_driven", "unknown_paths",
+                                                       "unmapped_paths", "max_head_error_m")} for c in report["clips"]]
+            for rec in outputs:
+                if rec["status"] == "ok":
+                    rec["fbx"], rec["clips"] = model["fbx"], model["clips"]
+                    assets[rec["asset_index"]]["converted"] = model["fbx"]
             for c in clips:
-                assets[c["asset_index"]]["converted"] = rec["fbx"]
+                assets[c["asset_index"]]["converted"] = model["fbx"]
         except Exception as exc:
-            rec.update(status="error", error=f"{type(exc).__name__}: {exc}"[:800])
-        outputs.append(rec)
+            model.update(status="error", error=f"{type(exc).__name__}: {exc}"[:800])
+            for rec in outputs:
+                if rec["status"] == "ok":
+                    rec.update(status="error", error=model["error"])
 
     errors = sum(1 for o in outputs if o["status"] == "error") + len(clip_errors)
     if errors == 0 and any(o["status"] == "ok" for o in outputs) and creature.get("status") in ("mapped", "extracted"):
@@ -115,7 +144,7 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
     doc = {"schema": "aniimo-pal/convert-summary", "schema_version": "0.1.0",
            "generator": {"name": TOOL_NAME, "version": __version__},
            "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), "creature": creature["id"],
-           "summary": summary, "meshes": outputs, "clip_errors": clip_errors,
+           "summary": summary, "model": model, "meshes": outputs, "clip_errors": clip_errors,
            "notes": ["Variant materials/textures are applied as material instances at Unreal import (milestone 5).",
                      "Unreal import and in-game behaviour are not verified by this step."]}
     write_json_atomic(doc, creature_dir / "convert" / "report.json")

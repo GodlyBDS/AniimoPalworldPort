@@ -12,6 +12,8 @@ min_binding_ratio = 0.8
 # A clip that matches the skeletons of more species than this is not associated by binding match
 # (shared rigs, e.g. humanoid avatar parts, make such a match meaningless); it is counted as ambiguous.
 max_binding_match_species = 3
+# A mesh shared by more prefabs than this (e.g. a runtime placeholder like "SkinDummyMesh") does not group them.
+max_shared_mesh_prefabs = 16
 # Number tokens with at least this many digits are IDs (P_Parmon_10025) and stay in the species name;
 # shorter numbers (Foxlet_01) are treated as numbering and ignored.
 min_id_digits = 4

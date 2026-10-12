@@ -50,6 +50,9 @@ class CatalogRules:
     min_binding_matches: int = 3
     min_binding_ratio: float = 0.8
     max_binding_match_species: int = 3
+    # A mesh shared by more prefabs than this (e.g. a placeholder "SkinDummyMesh" swapped at runtime) is not
+    # evidence that those prefabs are one species.
+    max_shared_mesh_prefabs: int = 16
     # Number tokens with at least this many digits are IDs (e.g. P_Parmon_10025) and stay part of the
     # species name; shorter ones (Foxlet_01) are treated as numbering and dropped.
     min_id_digits: int = 4

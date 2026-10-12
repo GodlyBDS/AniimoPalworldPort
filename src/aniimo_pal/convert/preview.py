@@ -18,6 +18,35 @@ def variant_label(form: str, appearance: str) -> str:
     return base
 
 
+def _material_main_texture(creature_dir: Path, material_asset: dict[str, Any]) -> str | None:
+    """Albedo texture file of one extracted material (UnityPy extract JSON)."""
+    if not material_asset.get("extracted"):
+        return None
+    doc = json.loads((creature_dir / material_asset["extracted"]).read_text(encoding="utf-8"))
+    textures = doc.get("textures") or {}
+    for slot in ("_MainTex", "_BaseMap", "_BaseColorMap", "_Albedo"):
+        if (textures.get(slot) or {}).get("file"):
+            return str(creature_dir / "extract" / "unitypy" / textures[slot]["file"])
+    for tex in textures.values():
+        if tex.get("file"):
+            return str(creature_dir / "extract" / "unitypy" / tex["file"])
+    return None
+
+
+def _part_textures(creature: dict[str, Any], creature_dir: Path, prefab: dict[str, Any]) -> dict[str, str]:
+    """{mesh name: albedo texture} for each skinned part of this prefab, from its renderer's own material."""
+    by_object = {(a.get("ref") or {}).get("object"): a for a in creature["assets"] if a["role"] == "material"}
+    out = {}
+    for part in prefab.get("parts") or []:
+        for mat_id in part.get("materials") or []:
+            mat = by_object.get(mat_id)
+            tex = _material_main_texture(creature_dir, mat) if mat and mat.get("association") != "rejected" else None
+            if tex and part.get("mesh_name"):
+                out[part["mesh_name"]] = tex
+                break
+    return out
+
+
 def _main_texture(creature: dict[str, Any], creature_dir: Path, form: str, appearance: str) -> str | None:
     """Main (albedo) texture file of the material that belongs to this identity, from the UnityPy extract."""
     best = None
@@ -59,7 +88,8 @@ def preview_job(creature: dict[str, Any], creature_dir: str | Path) -> dict[str,
         if key in seen:
             continue
         seen.add(key)
-        variants.append({"label": variant_label(*key), "texture": _main_texture(creature, creature_dir, *key)})
+        variants.append({"label": variant_label(*key), "texture": _main_texture(creature, creature_dir, *key),
+                         "part_textures": _part_textures(creature, creature_dir, p)})
     if not variants:
         variants = [{"label": "Normal", "texture": _main_texture(creature, creature_dir, "normal", "standard")}]
     out = creature_dir / "preview"

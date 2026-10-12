@@ -62,7 +62,8 @@ def creature_from_catalog(catalog: dict[str, Any], key: str, *, creature_id: str
     c["source"].update(catalog={"created_utc": catalog.get("created_utc"), "species_key": sp["key"],
                                 "root_label": (catalog.get("source") or {}).get("root_label")})
     c["prefabs"] = [{k: p.get(k) for k in ("object", "name", "asset_path", "container", "region", "form",
-                                           "appearance", "variant", "variant_provenance", "variant_evidence")}
+                                           "appearance", "variant", "variant_provenance", "variant_evidence",
+                                           "game_form_index", "game_form_name", "parts")}
                     for p in sp["prefabs"]]
 
     for entry in sp["assets"]:

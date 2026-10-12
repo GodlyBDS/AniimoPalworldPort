@@ -20,7 +20,11 @@ is read, so outputs always correspond to the confirmed source files.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import shutil
+import stat
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -279,6 +283,22 @@ def _norm(name: str) -> str:
 _BUILD_SUFFIX = re.compile(r"_(?:-\d{6,}|\d{9,}|(?=[0-9A-Fa-f]*[A-Fa-f])[0-9A-Fa-f]{8})$")
 
 
+def remove_tree(path: str | Path) -> None:
+    """Delete a folder tree, also on Windows with paths over 260 characters and read-only files."""
+    target = str(Path(path).resolve())
+    if os.name == "nt" and not target.startswith("\\\\?\\"):
+        target = "\\\\?\\" + target  # extended-length path: no MAX_PATH limit
+
+    def retry_writable(func, p, *_exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(target, onexc=retry_writable)
+    else:  # pragma: no cover - Python 3.11
+        shutil.rmtree(target, onerror=retry_writable)
+
+
 def _related_unassigned(files: list[str], assigned: set[str], unmatched_names: list[str], limit: int = 60) -> list[str]:
     distinctive = {t for n in unmatched_names for t in _norm(n).split("_") if len(t) >= 4 and not t.isalpha()} or \
         {t for n in unmatched_names for t in _norm(n).split("_") if len(t) >= 5}
@@ -300,7 +320,6 @@ def assetripper_export_creature(creature: dict[str, Any], creature_dir: str | Pa
                                 executable, *, mode: str = "primary", include_proposed: bool = False,
                                 replace: bool = False) -> dict[str, Any]:
     """Export a creature's source containers with AssetRipper and map outputs to its assets."""
-    import shutil
 
     from aniimo_pal.adapters.assetripper import AssetRipperSession
 
@@ -314,17 +333,23 @@ def assetripper_export_creature(creature: dict[str, Any], creature_dir: str | Pa
     if out_dir.exists() and any(out_dir.iterdir()):
         if not replace:
             raise ToolkitError(f"{out_dir} already has an export; pass --replace to redo it")
-        if creature_dir not in out_dir.resolve().parents:  # defensive: only ever delete inside the creature dir
+        if creature_dir.resolve() not in out_dir.resolve().parents:  # defensive: only delete inside the creature
             raise ToolkitError(f"refusing to delete {out_dir}")
-        shutil.rmtree(out_dir)
+        remove_tree(out_dir)
 
     allowed = {"confirmed"} | ({"proposed"} if include_proposed else set())
     selected = [(i, a) for i, a in enumerate(creature["assets"]) if a.get("association") in allowed]
     if not selected:
         raise ToolkitError("no confirmed assets to export")
     containers: dict[str, str] = {}
+    # The Unity-project export is only used for animation clips (meshes and textures come from `extract`),
+    # so it loads only the bundles holding clips, controllers and avatars instead of every shared bundle.
+    load_roles = {"animation", "skeleton", "other"} if mode == "project" else None
     for _i, a in selected:
-        containers.setdefault(a["ref"]["path"], a["ref"].get("sha256"))
+        if load_roles is None or a["role"] in load_roles:
+            containers.setdefault(a["ref"]["path"], a["ref"].get("sha256"))
+    if not containers:
+        raise ToolkitError(f"no assets for an AssetRipper {mode} export")
     for rel, digest in sorted(containers.items()):
         src = game_root / rel
         if not src.is_file() or _sha256(src) != digest:

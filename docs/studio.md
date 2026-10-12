@@ -62,7 +62,9 @@ that overlaps its own data folder.
    - *Run all steps*: extract (models with skin weights, textures) →
      AssetRipper animation export → convert to FBX → build 3D preview.
      Missing animations do not stop the model conversion (they are listed
-     as warnings);
+     as warnings). All parts of a creature (body, eyes, ...) end up in one
+     FBX on one skeleton, and the preview shows each part with its own
+     texture;
    - the **3D preview** tab shows every variant side by side (Normal, each
      Shiny appearance, Prismana) with its real extracted texture;
    - *Open 3D preview in Blender* opens the same scene in Blender. Every

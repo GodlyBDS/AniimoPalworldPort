@@ -285,3 +285,14 @@ def test_game_forms_join_their_creature_and_stay_unclassified(tmp_path):
     assert {p["name"]: p["game_form_name"] for p in t["prefabs"]}["NG_P_Parmon_1018403"] == "Highland Form"
     save_names(f, "10184", "")  # clearing restores the internal name
     assert apply_names(named, load_names(f)) == 0 and t["display_name"] == "P Parmon 10184"
+
+
+def test_widely_shared_placeholder_mesh_does_not_merge_species(tmp_path):
+    b = ub.SerializedBuilder()
+    dummy = ub.add_triangle_mesh(b, "SkinDummyMesh", ub.DEFAULT_BONES)
+    for name in ("P_Parmon_10025", "Avatar_Acc_Back_B10006", "Item_CatchBall"):
+        ub.add_creature(b, name, bones=ub.DEFAULT_BONES, clips=[], with_controller=False, mesh=dummy)
+    (tmp_path / "x.uab").write_bytes(ub.bundle(b.build(), "CAB-x"))
+    doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
+    assert len(build_catalog(doc)["species"]) == 1  # 3 users <= limit: still treated as one species
+    assert len(build_catalog(doc, CatalogRules(max_shared_mesh_prefabs=2))["species"]) == 3
