@@ -224,6 +224,7 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
         cand = _prefab_candidate(idx, h, root, rules)
         if cand is not None:
             all_candidates.append(cand)
+    placeholder_stats = _resolve_placeholder_meshes(idx, all_candidates, rules)
     name_groups = _name_groups(all_candidates, rules)
     candidates = [c for c in all_candidates if name_selected(c["root"].get("name"), rules)]
 
@@ -301,6 +302,7 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
             "unassigned_clip_count": sum(1 for c in idx.by_class.get("AnimationClip", []) if c["id"] not in claimed),
             "ambiguous_clip_count": ambiguous,
             "prefabs_filtered_out": len(all_candidates) - len(candidates),
+            "placeholder_meshes": placeholder_stats,
             "name_groups": name_groups,
             "diagnostics": _diagnostics(idx, h, roots, rules),
         },
@@ -341,6 +343,68 @@ def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], r
         "missing_mesh_files": [{"cab": cab, "count": n, "container": owners.get(cab)}
                                for cab, n in sorted(missing_mesh_targets.items(), key=lambda kv: -kv[1])[:10]],
     }
+
+
+_TRAILING_BUILD_NUMBER = re.compile(r"_-?\d{6,}$")
+
+
+def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any]],
+                                rules: CatalogRules) -> dict[str, Any]:
+    """Replace placeholder meshes on renderers with the real mesh, found by the renderer's object name.
+
+    Real Aniimo prefabs often point every SkinnedMeshRenderer at one shared placeholder
+    (``SkinDummyMesh``) and attach the real mesh at runtime. The real mesh is named after the renderer's
+    GameObject plus a build number (renderer ``M_Parmon_10503_Body01`` -> mesh
+    ``M_Parmon_10503_Body01_1597918372``). A match is used only when exactly one mesh name fits;
+    it is recorded as inferred (``mesh_source: renderer-name``).
+    """
+    users: dict[str, int] = defaultdict(int)
+    for c in candidates:
+        for m in c["meshes"]:
+            users[m["id"]] += 1
+    placeholders = {mid for mid, n in users.items() if n > rules.max_shared_mesh_prefabs}
+    placeholders |= {m["id"] for m in idx.by_class.get("Mesh", []) if "dummy" in tokens(m.get("name"))}
+    by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for m in idx.by_class.get("Mesh", []):
+        if m["id"] in placeholders or not m.get("name"):
+            continue
+        name = m["name"]
+        by_name[_norm_name(name)].append(m)
+        stripped = _TRAILING_BUILD_NUMBER.sub("", name)
+        if stripped != name:
+            by_name[_norm_name(stripped)].append(m)
+    resolved = unresolved = 0
+    examples: list[str] = []
+    for c in candidates:
+        if not any(s["mesh"] in placeholders for s in c["skins"]):
+            continue
+        meshes = {m["id"]: m for m in c["meshes"] if m["id"] not in placeholders}
+        for s in c["skins"]:
+            if s["mesh"] not in placeholders:
+                continue
+            go_name = (s.get("renderer_path") or c["root"].get("name") or "").rsplit("/", 1)[-1]
+            found = by_name.get(_norm_name(go_name), [])
+            names = {m["name"] for m in found}
+            if len(names) == 1:
+                real = sorted(found, key=lambda m: m["id"])[0]
+                s.update(placeholder_mesh=s["mesh"], mesh=real["id"], mesh_name=real["name"],
+                         mesh_source="renderer-name", mesh_provenance="inferred")
+                meshes[real["id"]] = real
+                resolved += 1
+            else:
+                s.update(placeholder_mesh=s["mesh"], mesh=None, unresolved_placeholder=go_name)
+                unresolved += 1
+                if len(examples) < 10:
+                    examples.append(f"{c['root'].get('name')}: renderer {go_name!r} "
+                                    f"({'no' if not names else len(names)} mesh name match)")
+        c["meshes"] = list(meshes.values())
+        c["skins"] = [s for s in c["skins"] if s["mesh"]]
+    return {"placeholder_mesh_ids": sorted(placeholders), "renderers_resolved": resolved,
+            "renderers_unresolved": unresolved, "unresolved_examples": examples}
+
+
+def _norm_name(name: str | None) -> str:
+    return "_".join(tokens(name))
 
 
 def _assign_game_ids(candidates: list[dict[str, Any]], rules: CatalogRules) -> None:

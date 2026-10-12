@@ -294,5 +294,35 @@ def test_widely_shared_placeholder_mesh_does_not_merge_species(tmp_path):
         ub.add_creature(b, name, bones=ub.DEFAULT_BONES, clips=[], with_controller=False, mesh=dummy)
     (tmp_path / "x.uab").write_bytes(ub.bundle(b.build(), "CAB-x"))
     doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
-    assert len(build_catalog(doc)["species"]) == 1  # 3 users <= limit: still treated as one species
+    cat = build_catalog(doc)  # a mesh named "dummy" is a placeholder: never evidence for one species
+    assert len(cat["species"]) == 3 and cat["summary"]["placeholder_meshes"]["renderers_unresolved"] == 3
+    other = ub.SerializedBuilder()
+    shared = ub.add_triangle_mesh(other, "SharedBody", ub.DEFAULT_BONES)
+    for name in ("P_Parmon_10025", "Avatar_Acc_Back_B10006", "Item_CatchBall"):
+        ub.add_creature(other, name, bones=ub.DEFAULT_BONES, clips=[], with_controller=False, mesh=shared)
+    (tmp_path / "x.uab").write_bytes(ub.bundle(other.build(), "CAB-x"))
+    doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
+    assert len(build_catalog(doc)["species"]) == 1  # 3 users <= limit: still one species
     assert len(build_catalog(doc, CatalogRules(max_shared_mesh_prefabs=2))["species"]) == 3
+
+
+def test_placeholder_renderer_resolved_to_real_mesh_by_name(tmp_path):
+    b = ub.SerializedBuilder()
+    dummy = ub.add_triangle_mesh(b, "SkinDummyMesh", ub.DEFAULT_BONES)
+    ub.add_creature(b, "M_Parmon_10503", bones=ub.DEFAULT_BONES, clips=["Idle"], mesh=dummy)
+    (tmp_path / "p_parmon_10503.uab").write_bytes(ub.bundle(b.build(), "CAB-p"))
+    m = ub.SerializedBuilder()  # the real mesh lives in its own bundle that no prefab references
+    ub.add_triangle_mesh(m, "M_Parmon_10503_Body_1597918372", ub.DEFAULT_BONES)
+    (tmp_path / "m_parmon_10503_body.uab").write_bytes(ub.bundle(m.build(), "CAB-m"))
+    doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
+    real = next(o for o in doc["objects"] if o["name"] == "M_Parmon_10503_Body_1597918372")
+    assert real["container"] == "m_parmon_10503_body.uab" and real["info"] == {"surveyed": True}
+    cat = build_catalog(doc)
+    sp = cat["species"][0]
+    skin = sp["skeleton"]["skins"][0]
+    assert skin["mesh"] == real["id"] and skin["mesh_source"] == "renderer-name"
+    assert skin["mesh_provenance"] == "inferred" and skin["placeholder_mesh"].endswith(f":{dummy}")
+    meshes = [a for a in sp["assets"] if a["role"] == "mesh"]
+    assert [a["name"] for a in meshes] == ["M_Parmon_10503_Body_1597918372"]
+    assert meshes[0]["container"] == "m_parmon_10503_body.uab"
+    assert cat["summary"]["placeholder_meshes"]["renderers_resolved"] == 1

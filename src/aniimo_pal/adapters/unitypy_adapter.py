@@ -273,7 +273,7 @@ class UnityPyAdapter(ToolAdapter):
         content kind, used to locate data tables).
         """
         env = self.load(path)
-        files, counts, asset_paths, text_assets = [], {}, [], []
+        files, counts, asset_paths, text_assets, meshes = [], {}, [], [], []
         for sf in self.serialized_files(env):
             externals = [cab_key(e.path) for e in sf.externals]
             files.append({"cab": cab_key(sf.name), "unity_version": str(sf.unity_version), "externals": externals,
@@ -290,6 +290,10 @@ class UnityPyAdapter(ToolAdapter):
                         if cls == "AssetBundle":
                             d = obj.parse_as_dict(check_read=False)
                             asset_paths += [str(entry[0]) for entry in d.get("m_Container") or []]
+                        elif cls == "Mesh" and len(meshes) < 20000:
+                            # Names only (cheap): lets placeholder renderers be resolved to real meshes
+                            # that no prefab references directly.
+                            meshes.append([cab_key(sf.name), obj.path_id, obj.peek_name()])
                         elif cls == "TextAsset" and len(text_assets) < 5000:
                             d = obj.parse_as_dict(check_read=False)
                             text_assets.append([cab_key(sf.name), obj.path_id, d.get("m_Name") or None,
@@ -297,7 +301,7 @@ class UnityPyAdapter(ToolAdapter):
                 except Exception:
                     pass
         return {"serialized_files": files, "class_counts": counts, "asset_paths": sorted(set(asset_paths))[:20000],
-                "text_assets": [t for t in text_assets if t[2]]}
+                "text_assets": [t for t in text_assets if t[2]], "meshes": [m for m in meshes if m[2]]}
 
     @staticmethod
     def _object_record(obj, cab: str, externals: list[str], cls: str | None = None, node_cache: dict | None = None,

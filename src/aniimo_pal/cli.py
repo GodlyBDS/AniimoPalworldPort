@@ -396,6 +396,12 @@ def cmd_creature_convert(args: argparse.Namespace, config: Config) -> int:
             print(f"  {m['status'].upper()} {m['mesh']}: {m.get('error')}")
         else:
             print(f"  ok {m['mesh']}: {m['fbx']} ({len(m['clips'])} clips)")
+    model = report.get("model") or {}
+    for part in (model.get("assembly") or {}).get("parts", []):
+        print(f"  part {Path(part['glb']).stem}: {part['joints']} joints, bind poses from {part['bind_pose_source']}"
+              f" (max difference to the prefab pose {part['bind_pose_max_deviation']:.3g})")
+    for w in (model.get("assembly") or {}).get("warnings", []):
+        print(f"  note: {w}")
     clip_errors = report["clip_errors"]
     if clip_errors:
         from collections import Counter
