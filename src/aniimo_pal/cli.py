@@ -524,9 +524,12 @@ def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
     print(f"renderers {d['renderers']}: with mesh {d['renderers_with_mesh']}, with GameObject "
           f"{d['renderers_with_gameobject']}, in a Transform hierarchy {d['renderers_in_hierarchy']}; "
           f"root GameObjects {d['root_gameobjects']}")
+    if d.get("renderers_without_mesh_reference"):
+        print(f"skinned renderers with an empty mesh slot (mesh assigned at runtime): "
+              f"{d['renderers_without_mesh_reference']}")
     ph = s.get("placeholder_meshes") or {}
     if ph.get("renderers_resolved") or ph.get("renderers_unresolved"):
-        print(f"placeholder meshes (real mesh attached at runtime): {ph['renderers_resolved']} renderers resolved by "
+        print(f"runtime meshes (placeholder or empty slot): {ph['renderers_resolved']} renderers resolved by "
               f"name, {ph['renderers_unresolved']} unresolved")
         for e in ph.get("unresolved_examples", [])[:5]:
             print(f"  unresolved: {e}")

@@ -137,7 +137,8 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
         for b in idx.refs(r, "m_Bones"):
             if b["id"] in path_of_transform:
                 bones[b["id"]] = path_of_transform[b["id"]]
-        if r["class"] == "SkinnedMeshRenderer" and mesh is not None:
+        if r["class"] == "SkinnedMeshRenderer":
+            # mesh None: no mesh reference at all (the game assigns it at runtime); resolved by name later.
             # Joint order matters: mesh blend indices refer to positions in m_Bones.
             ordered: dict[int, str | None] = {}
             for ref in r["refs"]:
@@ -145,7 +146,8 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
                 if m:
                     ordered[int(m.group(1))] = path_of_transform.get(ref["target"])
             root_bone = idx.ref(r, "m_RootBone")
-            skins.append({"renderer": r["id"], "mesh": mesh["id"], "mesh_name": mesh.get("name"),
+            skins.append({"renderer": r["id"], "mesh": mesh["id"] if mesh else None,
+                          "mesh_name": mesh.get("name") if mesh else None,
                           "renderer_path": path_of_transform.get((h.go_transform.get(go["id"]) or {}).get("id")),
                           "bones": [ordered.get(i) for i in range(max(ordered) + 1)] if ordered else [],
                           "root_bone": path_of_transform.get(root_bone["id"]) if root_bone else None,
@@ -154,8 +156,9 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
                           # game switches on at runtime, e.g. Grizbo's "Rampage" fur.
                           "active": _active_in_prefab(own_active, path_of_transform.get(
                               (h.go_transform.get(go["id"]) or {}).get("id")))})
-    if not meshes:
+    if not meshes and not skins:
         return None
+    _mark_part_states(skins)
 
     controllers, avatars, clips = [], [], []
     for a in animators:
@@ -183,6 +186,22 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
         "bone_paths": sorted(set(bones.values())), "skeleton_paths": skeleton_paths,
         "controllers": controllers, "avatars": avatars, "clips": clips, "local_trs": local_trs, "skins": skins,
     }
+
+
+def _mark_part_states(skins: list[dict[str, Any]]) -> None:
+    """Tag parts that belong to an alternative look the game switches to (e.g. Grizbo's Rampage).
+
+    Real prefabs keep both looks active and name the parts ``<part>_Default`` / ``<part>_<State>``
+    (``M_Parmon_10503_Fur01_Default``, ``..._Fur01_Rampage``, ``..._Fur02_Rampage``). A word is a state when
+    it replaces ``Default`` on some part; every part ending in that word gets ``state`` = the word, parts
+    ending in ``Default`` get ``default``, all others none (always shown). INFERRED from names.
+    """
+    names = [(s, tokens((s.get("renderer_path") or "").rsplit("/", 1)[-1])) for s in skins]
+    default_bases = {tuple(t[:-1]) for _s, t in names if len(t) > 1 and t[-1] == "default"}
+    states = {t[-1] for _s, t in names if len(t) > 1 and t[-1] != "default" and tuple(t[:-1]) in default_bases}
+    for s, t in names:
+        if len(t) > 1 and (t[-1] == "default" or t[-1] in states):
+            s["state"] = t[-1]
 
 
 def _active_in_prefab(own_active: dict[str, bool], path: str | None) -> bool:
@@ -238,6 +257,9 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
         if cand is not None:
             all_candidates.append(cand)
     placeholder_stats = _resolve_placeholder_meshes(idx, all_candidates, rules)
+    # Prefabs whose only renderers have empty mesh slots and no mesh of that name are not models.
+    all_candidates = [c for c in all_candidates if c["meshes"] or any(
+        u["candidates"] or not u["empty_slot"] for u in c.get("unresolved_parts", []))]
     name_groups = _name_groups(all_candidates, rules)
     candidates = [c for c in all_candidates if name_selected(c["root"].get("name"), rules)]
 
@@ -334,7 +356,7 @@ def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], r
     """Counts that explain an empty or small catalog (which link from renderer to prefab is missing)."""
     renderer_classes = RENDERER_CLASSES + (STATIC_RENDERER_CLASSES if rules.include_static_meshes else ())
     renderers = [r for cls in renderer_classes for r in idx.by_class.get(cls, [])]
-    with_mesh = with_go = in_hierarchy = 0
+    with_mesh = with_go = in_hierarchy = no_mesh_ref = 0
     missing_mesh_targets: dict[str, int] = defaultdict(int)
     for r in renderers:
         mesh_ref = next((ref for ref in r["refs"] if ref["field"] == "m_Mesh"), None)
@@ -342,6 +364,8 @@ def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], r
             with_mesh += 1
         elif mesh_ref is not None:
             missing_mesh_targets[mesh_ref["target"].rsplit(":", 1)[0]] += 1
+        elif r["class"] == "SkinnedMeshRenderer":
+            no_mesh_ref += 1
         go = idx.ref(r, "m_GameObject")
         if go is not None:
             with_go += 1
@@ -352,6 +376,8 @@ def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], r
         "root_gameobjects": len(roots),
         "renderers": len(renderers),
         "renderers_with_mesh": with_mesh,
+        # Skinned renderers with an empty mesh slot: the game assigns the mesh at runtime.
+        "renderers_without_mesh_reference": no_mesh_ref,
         "renderers_with_gameobject": with_go,
         "renderers_in_hierarchy": in_hierarchy,
         # Where unresolved meshes live: the serialized file and the container that holds it (if any was read).
@@ -391,10 +417,14 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
     resolved = unresolved = 0
     examples: list[str] = []
     for c in candidates:
-        if not any(s["mesh"] in placeholders for s in c["skins"]):
+        if not any(s["mesh"] is None or s["mesh"] in placeholders for s in c["skins"]):
             continue
         meshes = {m["id"]: m for m in c["meshes"] if m["id"] not in placeholders}
         id_tokens = {t for t in tokens(c["root"].get("name")) if t.isdigit() and len(t) >= rules.min_id_digits}
+        # The creature ID without a form index (NG_P_Parmon_1018403 -> 10184): its bundles name that ID.
+        base_tokens = {t[:-rules.form_index_digits] for t in id_tokens
+                       if len(t) - rules.form_index_digits >= rules.min_id_digits} - id_tokens
+        skeleton_hashes = _skeleton_hashes(c)
         # Build numbers of real meshes this prefab already uses directly: its other parts share them.
         own_numbers: dict[str, int] = defaultdict(int)
         for m in meshes.values():
@@ -403,7 +433,7 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
         pending = []
         votes: dict[str, int] = defaultdict(int)
         for s in c["skins"]:
-            if s["mesh"] not in placeholders:
+            if s["mesh"] is not None and s["mesh"] not in placeholders:
                 continue
             go_name = (s.get("renderer_path") or c["root"].get("name") or "").rsplit("/", 1)[-1]
             found = by_name.get(_norm_name(go_name), [])
@@ -420,23 +450,35 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
             if len(names) == 1:
                 choice = found
             elif by_num:
-                # Same base name, several build numbers (other versions of the model): prefer the mesh whose
-                # bundle names this prefab's ID, then the build number shared with the prefab's other parts.
-                score = {num: (max(len(id_tokens & set(tokens(m.get("container")))) for m in group),
-                               own_numbers.get(num, 0), votes[num]) for num, group in by_num.items()}
+                # Same base name, several build numbers (other versions of the model). In order:
+                # 1. the mesh's bone hashes fit this renderer (only when some version fits fully),
+                # 2. its bundle names this prefab's ID, then the creature ID without the form index,
+                # 3. the build number shared with the prefab's directly referenced parts,
+                # 4. the newest patch bundle (xptNN_...: a later build of the same asset replaces the old one),
+                # 5. the build number most of this prefab's parts can use.
+                fits = {num: max(_bone_fit(m, s, skeleton_hashes) for m in group) for num, group in by_num.items()}
+                use_fit = 2 in fits.values()
+                score = {num: (int(use_fit and fits[num] == 2),
+                               max(len(id_tokens & set(tokens(m.get("container")))) for m in group),
+                               max(len(base_tokens & set(tokens(m.get("container")))) for m in group),
+                               own_numbers.get(num, 0), max(_patch_level(m.get("container")) for m in group),
+                               votes[num]) for num, group in by_num.items()}
                 ranked = sorted(by_num, key=lambda n: tuple(-x for x in score[n]) + (n,))
                 if (len(ranked) == 1 or score[ranked[0]] > score[ranked[1]]) and \
                         len({m["name"] for m in by_num[ranked[0]]}) == 1:
                     choice, how = by_num[ranked[0]], "renderer-name+build-number"
             if choice:
-                real = sorted(choice, key=lambda m: m["id"])[0]
+                # The same mesh can sit in an old bundle and its patch: take the newest copy.
+                real = sorted(choice, key=lambda m: (-_patch_level(m.get("container")), m["id"]))[0]
                 s.update(placeholder_mesh=s["mesh"], mesh=real["id"], mesh_name=real["name"],
                          mesh_source=how, mesh_provenance="inferred")
                 meshes[real["id"]] = real
                 resolved += 1
             else:
                 s.update(placeholder_mesh=s["mesh"], mesh=None)
-                c.setdefault("unresolved_parts", []).append({"renderer": go_name, "candidates": sorted(names)[:8]})
+                c.setdefault("unresolved_parts", []).append({"renderer": go_name, "candidates": sorted(names)[:8],
+                                                             "state": s.get("state"), "active": s.get("active"),
+                                                             "empty_slot": s["placeholder_mesh"] is None})
                 unresolved += 1
                 if len(examples) < 10:
                     examples.append(f"{c['root'].get('name')}: renderer {go_name!r} "
@@ -448,6 +490,33 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
 
 
 _MESH_BUILD_NAME = re.compile(r"^(?P<base>.+)_(?P<num>-?\d{6,})$")
+_PATCH_PREFIX = re.compile(r"^xpt(\d+)_", re.IGNORECASE)
+
+
+def _patch_level(container: str | None) -> int:
+    """``xpt25_..._ar_char_parm_10321_rose_fbx_...uab`` -> 25 (a patch bundle); plain bundles -> 0."""
+    m = _PATCH_PREFIX.match((container or "").replace("\\", "/").rsplit("/", 1)[-1])
+    return int(m.group(1)) if m else 0
+
+
+def _skeleton_hashes(c: dict[str, Any]) -> set[int]:
+    """Path hashes of a prefab's transforms in the forms Unity may have hashed (path, name, root-prefixed)."""
+    root = c["root"].get("name") or ""
+    out = set()
+    for p in c["skeleton_paths"]:
+        out |= {path_hash(p), path_hash(p.rsplit("/", 1)[-1]), path_hash(f"{root}/{p}")}
+    return out
+
+
+def _bone_fit(mesh: dict[str, Any], skin: dict[str, Any], skeleton_hashes: set[int]) -> int:
+    """2: the mesh's bone hashes are all transforms of this prefab (and the count fits the renderer);
+    0: they are not; 1: unknown (mesh only surveyed, or no bone data)."""
+    hashes = (mesh.get("info") or {}).get("bone_name_hashes")
+    if not hashes:
+        return 1
+    if skin.get("bones") and len(skin["bones"]) < len(hashes):
+        return 0
+    return 2 if set(hashes) <= skeleton_hashes else 0
 
 
 def _norm_name(name: str | None) -> str:
@@ -702,6 +771,7 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
     local_trs = base_cand["local_trs"]
     skeleton = {
         "root_object": base["object"],
+        "root_name": base["name"],
         "bones": [{"path": p, "name": p.rsplit("/", 1)[-1], "parent": p.rsplit("/", 1)[0] if "/" in p else None,
                    "skinned": p in bone_paths, "local": local_trs.get(p)} for p in skel_paths],
         "avatar": base_cand["avatars"][0]["id"] if base_cand["avatars"] else None,

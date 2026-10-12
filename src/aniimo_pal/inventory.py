@@ -129,7 +129,7 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
     if cache:
         cache.mkdir(parents=True, exist_ok=True)
     deep_tag = f"{CACHE_FORMAT}-{'all' if all_objects else 'relevant'}-{unitypy_version()}"
-    survey_tag = f"survey-4-{unitypy_version()}"
+    survey_tag = f"survey-5-{unitypy_version()}"
 
     candidates, skipped = [], []
     for entry in manifest["files"]:
@@ -263,10 +263,11 @@ def build_inventory(manifest: dict[str, Any], root: str | Path, *, include: Iter
                                 "info": rest[0] if rest else {},
                                 "error": None, "container": rel})
             for cls, class_id, key in (("Mesh", 43, "meshes"), ("MonoBehaviour", 114, "scriptables")):
-                for cab, path_id, name in survey.get(key, []):
+                for cab, path_id, name, *rest in survey.get(key, []):
                     objects.append({"id": f"{cab}:{path_id}", "cab": cab, "path_id": path_id, "class": cls,
                                     "class_id": class_id, "name": name, "asset_path": None, "refs": [],
-                                    "info": {"surveyed": True}, "error": None, "container": rel})
+                                    "info": rest[0] if rest else {"surveyed": True}, "error": None,
+                                    "container": rel})
         for cls, n in record["class_counts"].items():
             class_counts[cls] += n
 

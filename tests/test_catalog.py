@@ -316,7 +316,8 @@ def test_placeholder_renderer_resolved_to_real_mesh_by_name(tmp_path):
     (tmp_path / "m_parmon_10503_body.uab").write_bytes(ub.bundle(m.build(), "CAB-m"))
     doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
     real = next(o for o in doc["objects"] if o["name"] == "M_Parmon_10503_Body_1597918372")
-    assert real["container"] == "m_parmon_10503_body.uab" and real["info"] == {"surveyed": True}
+    assert real["container"] == "m_parmon_10503_body.uab" and real["info"]["surveyed"] is True
+    assert real["info"]["bone_name_hashes"] == sorted(path_hash(p) for p in ub.DEFAULT_BONES)
     cat = build_catalog(doc)
     sp = cat["species"][0]
     skin = sp["skeleton"]["skins"][0]
@@ -386,7 +387,8 @@ def test_unresolvable_parts_are_recorded_and_hidden_parts_flagged(tmp_path):
     (tmp_path / "m.uab").write_bytes(ub.bundle(m.build(), "CAB-m"))
     skel = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))["species"][0]["skeleton"]
     assert [(s["mesh_name"], s["active"]) for s in skel["skins"]] == [("M_Parmon_10503_Fur01_Rampage_-1659155025", False)]
-    assert skel["unresolved_parts"] == [{"renderer": "M_Parmon_10503_Body",
+    assert skel["unresolved_parts"] == [{"renderer": "M_Parmon_10503_Body", "state": None, "active": True,
+                                         "empty_slot": False,
                                          "candidates": ["M_Parmon_10503_Body_111111111", "M_Parmon_10503_Body_222222222"]}]
 
 
@@ -397,3 +399,65 @@ def test_aniimo_preset_only_adds_the_creature_filter():
     preset = load_rules(Path(__file__).resolve().parents[1] / "config" / "catalog_rules_aniimo.toml")
     assert preset.include_name_prefixes == ["p_parmon", "ng_p_parmon"]
     assert replace(preset, include_name_prefixes=[]) == CatalogRules()
+
+
+def test_empty_mesh_slot_resolved_by_name_and_alternative_looks_tagged(tmp_path):
+    b = ub.SerializedBuilder()
+    gos = _placeholder_creature(b, "P_Parmon_10503", ["M_Parmon_10503_Eye_Default", "M_Parmon_10503_Body",
+                                                      "M_Parmon_10503_Eye_Rampage", "M_Parmon_10503_Fur02_Rampage"])
+    smr = next(o for o in b._objects if o.class_id == 137
+               and o.data["m_GameObject"]["m_PathID"] == gos["M_Parmon_10503_Body"])
+    smr.data["m_Mesh"] = ub.pptr(0)  # empty slot: the game assigns the body mesh at runtime
+    (tmp_path / "p.uab").write_bytes(ub.bundle(b.build(), "CAB-p"))
+    m = ub.SerializedBuilder()
+    for n in ("M_Parmon_10503_Body_-1659155025", "M_Parmon_10503_Eye_Rampage_-1659155025",
+              "M_Parmon_10503_Fur02_Rampage_-1659155025"):
+        ub.add_triangle_mesh(m, n, ub.DEFAULT_BONES)
+    (tmp_path / "m.uab").write_bytes(ub.bundle(m.build(), "CAB-m"))
+    cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))
+    skel = cat["species"][0]["skeleton"]
+    got = {s["mesh_name"]: s.get("state") for s in skel["skins"]}
+    assert got == {"M_Parmon_10503_Body_-1659155025": None, "M_Parmon_10503_Eye_Rampage_-1659155025": "rampage",
+                   "M_Parmon_10503_Fur02_Rampage_-1659155025": "rampage"}
+    assert [(u["renderer"], u["state"]) for u in skel["unresolved_parts"]] == [("M_Parmon_10503_Eye_Default", "default")]
+    assert cat["summary"]["diagnostics"]["renderers_without_mesh_reference"] == 1
+
+
+def test_prefab_with_only_empty_mesh_slots_is_still_a_creature(tmp_path):
+    b = ub.SerializedBuilder()
+    gos = _placeholder_creature(b, "P_Parmon_10052", ["M_Parmon_10052_Body01"])
+    smr = next(o for o in b._objects if o.class_id == 137
+               and o.data["m_GameObject"]["m_PathID"] == gos.get("M_Parmon_10052_Body01", -1)) if gos else None
+    for o in b._objects:
+        if o.class_id == 137:
+            o.data["m_Mesh"] = ub.pptr(0)
+    assert smr is None  # the only part is the renamed body renderer
+    (tmp_path / "p.uab").write_bytes(ub.bundle(b.build(), "CAB-p"))
+    cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))
+    assert cat["species"] == []  # no mesh anywhere: not a model
+    m = ub.SerializedBuilder()
+    ub.add_triangle_mesh(m, "M_Parmon_10052_Body01_1657895151", ub.DEFAULT_BONES)
+    (tmp_path / "m.uab").write_bytes(ub.bundle(m.build(), "CAB-m"))
+    cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))
+    assert [s["mesh_name"] for s in cat["species"][0]["skeleton"]["skins"]] == ["M_Parmon_10052_Body01_1657895151"]
+
+
+def test_runtime_mesh_prefers_bone_fit_then_patch_bundle(tmp_path):
+    b = ub.SerializedBuilder()
+    _placeholder_creature(b, "P_Parmon_10321", ["M_Parmon_10321_Eye"])
+    (tmp_path / "p.uab").write_bytes(ub.bundle(b.build(), "CAB-p"))
+    bundles = {"ar_char_parm_10321_rose_fbx.uab": ("M_Parmon_10321_Eye_-2121219568", ub.DEFAULT_BONES),
+               "xpt24_ar_char_3af4_ar_char_parm_10321_rose_fbx.uab": ("M_Parmon_10321_Eye_-214083920", ub.DEFAULT_BONES)}
+    for i, (bundle, (name, bones)) in enumerate(bundles.items()):
+        m = ub.SerializedBuilder()
+        ub.add_triangle_mesh(m, name, bones)
+        (tmp_path / bundle).write_bytes(ub.bundle(m.build(), f"CAB-m{i}"))
+    cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))
+    assert [s["mesh_name"] for s in cat["species"][0]["skeleton"]["skins"]] == ["M_Parmon_10321_Eye_-214083920"]
+
+    # A mesh rigged to bones this prefab does not have loses, even from the newest patch.
+    m = ub.SerializedBuilder()
+    ub.add_triangle_mesh(m, "M_Parmon_10321_Eye_-214083920", ["Other", "Other/Bone"])
+    (tmp_path / "xpt24_ar_char_3af4_ar_char_parm_10321_rose_fbx.uab").write_bytes(ub.bundle(m.build(), "CAB-m1"))
+    cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))
+    assert [s["mesh_name"] for s in cat["species"][0]["skeleton"]["skins"]] == ["M_Parmon_10321_Eye_-2121219568"]

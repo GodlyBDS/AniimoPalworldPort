@@ -294,3 +294,20 @@ def test_part_hidden_by_default_is_left_out_of_the_model(tmp_path):
     by_mesh = {m["mesh"]: m for m in report["meshes"]}
     assert by_mesh["Foxlet_Eye"]["status"] == "skipped" and "hidden by default" in by_mesh["Foxlet_Eye"]["error"]
     assert report["model"]["status"] == "ok" and report["model"]["parts"] == 1
+
+
+def test_bones_from_hashes_and_alternative_look_skipped(tmp_path):
+    from aniimo_pal.catalog.builder import path_hash
+    from aniimo_pal.convert.pipeline import bones_from_hashes, convert_creature
+
+    paths = ["Root", "Root/Hips", "Root/Hips/Spine"]
+    assert bones_from_hashes([path_hash("Root/Hips/Spine"), path_hash("Root")], paths) == ["Root/Hips/Spine", "Root"]
+    assert bones_from_hashes([path_hash("Spine"), 1], paths) == ["Root/Hips/Spine", None]
+
+    creature = {"id": "x", "assets": [], "skeleton": {"bones": [{"path": p} for p in paths], "skins": [
+        {"mesh": "a", "mesh_name": "M_Fur01_Default_1", "bones": paths, "state": "default"},
+        {"mesh": "b", "mesh_name": "M_Fur01_Rampage_1", "bones": paths, "state": "rampage"}]}}
+    report = convert_creature(creature, tmp_path)
+    by_mesh = {m["mesh"]: m for m in report["meshes"]}
+    assert by_mesh["M_Fur01_Rampage_1"]["status"] == "skipped" and "rampage" in by_mesh["M_Fur01_Rampage_1"]["error"]
+    assert by_mesh["M_Fur01_Default_1"]["error"] == "mesh asset not confirmed in this creature project"

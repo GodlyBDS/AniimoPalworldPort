@@ -165,6 +165,19 @@ def _class_info(cls: str, d: dict[str, Any]) -> dict[str, Any]:
     return info
 
 
+def _mesh_header(obj, node_cache: dict) -> tuple[str | None, dict[str, Any]]:
+    """(name, info) of a Mesh read only up to its bone data; falls back to the name alone."""
+    try:
+        node = _truncated_node(obj._get_typetree_node(), TRUNCATE_AT["Mesh"], node_cache)
+        if node is not None:
+            d = obj.parse_as_dict(node, check_read=False)
+            return d.get("m_Name") or None, {"surveyed": True, "bone_name_hashes": sorted(
+                {int(h) for h in d.get("m_BoneNameHashes") or []})}
+    except Exception:
+        pass
+    return obj.peek_name(), {"surveyed": True}
+
+
 def _text_asset_info(script: Any) -> dict[str, Any]:
     """Size and a coarse content guess for a TextAsset (data tables often live in these)."""
     if isinstance(script, str):
@@ -274,6 +287,7 @@ class UnityPyAdapter(ToolAdapter):
         """
         env = self.load(path)
         files, counts, asset_paths, text_assets, meshes, scriptables = [], {}, [], [], [], []
+        node_cache: dict = {}
         for sf in self.serialized_files(env):
             externals = [cab_key(e.path) for e in sf.externals]
             files.append({"cab": cab_key(sf.name), "unity_version": str(sf.unity_version), "externals": externals,
@@ -291,9 +305,9 @@ class UnityPyAdapter(ToolAdapter):
                             d = obj.parse_as_dict(check_read=False)
                             asset_paths += [str(entry[0]) for entry in d.get("m_Container") or []]
                         elif cls == "Mesh" and len(meshes) < 20000:
-                            # Names only (cheap): lets placeholder renderers be resolved to real meshes
-                            # that no prefab references directly.
-                            meshes.append([cab_key(sf.name), obj.path_id, obj.peek_name()])
+                            # Name and bone hashes (header only, no vertex data): lets renderers whose mesh the
+                            # game assigns at runtime be matched to a real mesh no prefab references directly.
+                            meshes.append([cab_key(sf.name), obj.path_id, *_mesh_header(obj, node_cache)])
                         elif cls == "MonoBehaviour" and len(scriptables) < 20000:
                             # Named MonoBehaviours are ScriptableObject assets (components are unnamed), e.g.
                             # per-mesh bind-pose data (M_Parmon_10184_Body_BindPose_-1771000540).

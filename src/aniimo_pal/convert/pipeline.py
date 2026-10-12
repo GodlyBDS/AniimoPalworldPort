@@ -32,6 +32,21 @@ from aniimo_pal.manifest.io import write_json_atomic
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def bones_from_hashes(hashes: list[int], paths: list[str], root_name: str | None = None) -> list[str | None]:
+    """Unity ``m_BoneNameHashes`` (CRC32 of the bone path) -> skeleton paths, in the mesh's bone order.
+
+    The hashed string's form is not documented; path, bone name and root-prefixed path are all tried.
+    """
+    from aniimo_pal.catalog.builder import path_hash
+
+    lookup: dict[int, str] = {}
+    for p in paths:
+        for key in (p.rsplit("/", 1)[-1], f"{root_name}/{p}" if root_name else None, p):
+            if key:
+                lookup[path_hash(key)] = p
+    return [lookup.get(int(h)) for h in hashes]
+
+
 def _usable(asset: dict[str, Any], include_proposed: bool) -> bool:
     return asset.get("association") == "confirmed" or (include_proposed and asset.get("association") == "proposed")
 
@@ -73,7 +88,13 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
     outputs, parts = [], []
     identity = [[1.0 if r == c else 0.0 for c in range(4)] for r in range(4)]
     any_active = any(s.get("active", True) for s in skins)
+    has_base_parts = any(s.get("state") in (None, "default") for s in skins)
     for skin in skins:
+        if has_base_parts and skin.get("state") not in (None, "default"):
+            outputs.append({"mesh": skin.get("mesh_name"), "status": "skipped", "state": skin["state"],
+                            "error": f"alternative look '{skin['state']}' (the game switches to it, e.g. in combat); "
+                                     "not part of the base model"})
+            continue
         if any_active and skin.get("active") is False:
             outputs.append({"mesh": skin.get("mesh_name"), "status": "skipped",
                             "error": "hidden by default in the prefab (alternative state the game switches on, "
@@ -110,7 +131,22 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
         elif own.endswith(".obj"):
             skin_json = creature_dir / (own[:-4] + ".skin.json")
             if skin_json.is_file():
-                bind_poses = json.loads(skin_json.read_text(encoding="utf-8"))["bind_poses"]
+                skin_data = json.loads(skin_json.read_text(encoding="utf-8"))
+                bind_poses = skin_data["bind_poses"]
+                if not joints or None in joints or len(joints) != len(bind_poses):
+                    # The renderer's bone list is empty or does not fit this mesh (mesh assigned at runtime):
+                    # rebuild the joint order from the mesh's own bone hashes.
+                    rebuilt = bones_from_hashes(skin_data.get("bone_name_hashes") or [], list(locals_),
+                                                skeleton.get("root_name"))
+                    if rebuilt and None not in rebuilt and len(rebuilt) == len(bind_poses):
+                        joints = rebuilt
+                        rec["joints_from"] = "mesh-bone-hashes"
+                if len(joints) != len(bind_poses):
+                    outputs.append(dict(rec, status="error",
+                                        error=f"mesh has {len(bind_poses)} bind poses but the renderer lists "
+                                              f"{len(joints)} bones, and the mesh's bone hashes do not match "
+                                              "this skeleton"))
+                    continue
         missing = [j for j in joints if j is None or j not in locals_]
         if not joints or missing:
             outputs.append(dict(rec, status="error", error=f"skin joints missing from the skeleton: {missing}"))
@@ -119,9 +155,11 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
         outputs.append(rec)
 
     for u in skeleton.get("unresolved_parts") or []:
+        cands = u.get("candidates") or []
         outputs.append({"mesh": u["renderer"], "status": "skipped",
-                        "error": f"real mesh behind the runtime placeholder not identified "
-                                 f"({len(u['candidates'])} candidates)"})
+                        "error": "real mesh (assigned at runtime) not identified: " +
+                                 (f"{len(cands)} candidates ({', '.join(cands[:3])})" if cands
+                                  else "no mesh with this name in the object list")})
     model: dict[str, Any] | None = None
     if parts:
         name = _SAFE.sub("_", creature["id"])
