@@ -411,8 +411,9 @@ def _creature_list_and_group_chooser(app, layout):
     ws.root.mkdir(parents=True, exist_ok=True)
     sp = {"key": "p_parmon_10503", "suggested_id": "aniimo_p_parmon_10503", "display_name": "P Parmon 10503",
           "codename": {"value": "sleepybear", "id": "10503", "evidence": "1 name(s)", "provenance": "inferred"},
-          "prefabs": [{"variant": "normal"}], "assets": [], "animations": [], "warnings": ["w"] * 9,
-          "skeleton": {"bones": []}}
+          "prefabs": [{"variant": "normal"}, {"variant": "unclassified", "game_form_index": "03"}],
+          "assets": [], "animations": [], "warnings": ["w"] * 9, "skeleton": {"bones": []},
+          "game_id": "10503", "game_forms": ["03"]}
     other = dict(sp, key="eff_parmon_skill", suggested_id="aniimo_eff", display_name="Eff Parmon Skill", codename=None)
     groups = [{"prefix": "eff_parmon", "prefabs": 5, "with_id": 0, "examples": ["Eff_Parmon_Skill"], "selected": True},
               {"prefix": "p_parmon", "prefabs": 2, "with_id": 2, "examples": ["P_Parmon_10503"], "selected": True}]
@@ -425,7 +426,19 @@ def _creature_list_and_group_chooser(app, layout):
     app.species_tree.selection_set("p_parmon_10503")
     app.show_creature()
     text = app.creature_info.get("1.0", "end")
-    assert "sleepybear" in text and "and 5 more warnings" in text
+    assert "sleepybear" in text and "and 5 more warnings" in text and "Game ID 10503" in text
+    app.set_names()
+    entries = [w for w in app.names_dialog.winfo_children()[0].winfo_children() if w.winfo_class() == "TEntry"]
+    entries[0].insert(0, "Grizbo")
+    entries[1].insert(0, "Prismana")
+    save = next(w for w in app.names_dialog.winfo_children()[0].winfo_children()[-1].winfo_children()
+                if w.cget("text") == "Save")
+    save.invoke()
+    from aniimo_pal.catalog.names import load_names
+
+    assert load_names(ws.names) == {"names": {"10503": "Grizbo"}, "forms": {"10503": {"03": "Prismana"}}}
+    assert app.species_tree.item("p_parmon_10503")["values"][0] == "Grizbo"
+    assert "03 = Prismana" in app.creature_info.get("1.0", "end")
     app.species_filter.set("")
     ran = []
     app.run_scan = lambda which: ran.append(which)

@@ -70,6 +70,11 @@ class Workspace:
         return self.root / "catalog.json"
 
     @property
+    def names(self) -> Path:
+        """Names the user gave to game IDs (creatures and their forms)."""
+        return self.root / "creature_names.toml"
+
+    @property
     def catalog_rules(self) -> Path:
         """Catalog rules chosen in the Studio (e.g. which name groups are creatures)."""
         return self.root / "catalog_rules.toml"
@@ -139,6 +144,7 @@ class StepRunner:
 
     def cmd_catalog(self) -> list[str]:
         rules = ["--rules", str(self.ws.catalog_rules)] if self.ws.catalog_rules.is_file() else []
+        rules += ["--names", str(self.ws.names)] if self.ws.names.is_file() else []
         return self.base() + ["catalog", "build", str(self.ws.objects), "-o", str(self.ws.catalog)] + rules
 
     def cmd_create(self, species_key: str) -> list[str]:

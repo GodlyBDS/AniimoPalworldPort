@@ -356,9 +356,18 @@ def cmd_creature_assetripper(args: argparse.Namespace, config: Config) -> int:
     s = report["summary"]
     print(f"AssetRipper {args.mode}: files {s['files_written']}, assets matched {s['assets_matched']}, "
           f"unmatched {s['assets_unmatched']}, prefabs matched {s['prefabs_matched']}")
-    for m in report["assets"]:
-        if not m["files"]:
-            print(f"  unmatched asset {m['index']}: {m['role']} {m['name']}")
+    unmatched = [m for m in report["assets"] if not m["files"]]
+    for m in unmatched[:40]:
+        print(f"  unmatched asset {m['index']}: {m['role']} {m['name']}")
+    if len(unmatched) > 40:
+        print(f"  ... and {len(unmatched) - 40} more unmatched assets")
+    sample = report.get("unassigned_files_sample", [])
+    if unmatched and sample:
+        print("  exported files not matched to any asset (sample):")
+        for f in sample[:30]:
+            print(f"    {f}")
+    if s["files_written"] == 0:
+        print("  AssetRipper wrote no files. Its log: " + " | ".join(report.get("log_tail") or []))
     return EXIT_OK
 
 
@@ -478,9 +487,11 @@ def cmd_objects_find(args: argparse.Namespace, config: Config) -> int:
 
 def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
     from aniimo_pal.catalog import build_catalog, load_rules
+    from aniimo_pal.catalog.names import load_names
     from aniimo_pal.manifest.io import write_json_atomic
 
-    doc = build_catalog(_read_json(args.objects), load_rules(args.rules))
+    names = load_names(args.names) if args.names else None
+    doc = build_catalog(_read_json(args.objects), load_rules(args.rules), names)
     write_json_atomic(doc, args.output, indent=config.manifest.indent)
     s = doc["summary"]
     print(f"species {s['species_count']} from {s['prefab_count']} prefabs; unassigned clips {s['unassigned_clip_count']} "
@@ -675,6 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("objects", help="objects.json from `inventory`")
     p.add_argument("-o", "--output", required=True)
     p.add_argument("--rules", help="catalog rules TOML (default: built-in, see config/catalog_rules.toml)")
+    p.add_argument("--names", help="your names for game IDs (TOML: [names] \"10184\" = \"...\"; [forms.\"10184\"])")
     p.set_defaults(func=cmd_catalog_build)
     p = catsub.add_parser("list", help="list species in a catalog")
     p.add_argument("catalog")

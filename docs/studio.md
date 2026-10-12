@@ -50,6 +50,10 @@ that overlaps its own data folder.
      the groups that are creatures. Groups whose names carry ID numbers are
      suggested. The choice is saved as `workspace/catalog_rules.toml` and the
      list is rebuilt. Search filters by name, ID and codename guess;
+   - *Set names…*: type the creature's in-game name and name its numbered
+     forms (form 03 = "Highland Form", …). Stored in
+     `workspace/creature_names.toml` as your own entries; the toolkit ships
+     no creature names;
    - pick a creature → *Create project* → review assets (confirm/reject
      proposals). Steps can also run before the review: the Studio asks and
      then uses the proposed links (they stay marked as proposed);

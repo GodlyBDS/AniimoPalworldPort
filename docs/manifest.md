@@ -116,6 +116,19 @@ still groups with `Foxlet`. Each species may carry a `codename` guess
 (`{value, id, evidence, alternatives, provenance: "inferred"}`) taken from
 bundle file names and asset paths that put a word right after its ID, e.g.
 `aexp_tcpm_10503_sleepybear_tga_0_<hash>.uab` → `sleepybear`.
+**Game IDs and forms.** The first ID in a prefab name is its `game_id`. An ID
+that is another prefab's ID plus `form_index_digits` (2) more digits is a
+numbered form of that creature: `NG_P_Parmon_1018403` = creature `10184`, form
+`03`, grouped with `P_Parmon_10184` (evidence `same-game-id`; only for
+compatible name prefixes, so `Eff_Parmon_10184_Skill` stays separate). In
+Aniimo the meaning of a form number differs per creature (one creature's `01`
+is a regional form, another's is Prismana), so forms other than `00` are
+`unclassified` with evidence `game-form-index:NN` until the user decides.
+Species carry `game_id` and `game_forms`; prefabs carry `game_form_index`.
+With `catalog build --names FILE` (user-written; the Studio's *Set names*
+writes `workspace/creature_names.toml`) species get `display_name` from the
+file (`display_name_provenance: "user"`, original in `internal_name`) and
+prefabs a `game_form_name`.
 `include_name_prefixes` / `exclude_name_prefixes` restrict candidates by name
 prefix (token form, e.g. `p_parmon`); `summary.name_groups` lists every rigged
 prefab group (`prefix`, `prefabs`, `with_id`, `examples`, `selected`) and

@@ -346,6 +346,10 @@ def assetripper_export_creature(creature: dict[str, Any], creature_dir: str | Pa
                     "files_written": len(all_files)},
         "assets": matches,
         "prefabs": prefab_matches,
+        # Exported files no asset was matched to: shows how AssetRipper named things when matching fails.
+        "unassigned_files_sample": sorted(
+            set(f.relative_to(creature_dir).as_posix() for f in all_files)
+            - {f for m in matches + prefab_matches for f in m["files"]})[:60],
         "log_tail": log_tail,
     }
     write_json_atomic(report, base / f"report-{mode}.json")

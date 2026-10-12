@@ -56,6 +56,8 @@ animation events) without migrations.
 | Catalog scales to a real-size object list: 3,000 rigged prefabs + 20,000 clips in ~9 s (clips grouped by binding set, indexed once); clips fitting too many skeletons counted as ambiguous; diagnostics for empty catalogs | `tests/test_catalog.py`; synthetic benchmark |
 | Studio first-run install (Python env, AssetRipper, Blender 5.2.2), scan and parallel object list on **Windows** with a real Aniimo install (2,165 containers, 2.36 M objects, 4.5 min) | User's machine (log shared, no game files) |
 | Catalog on the real install: before ID-aware naming, all `P_Parmon_<id>` prefabs merged into one species and effects/items were listed; now IDs separate species, name groups can be chosen, codenames are guessed from file names | Unit tests with Aniimo-style names; **re-run on the real install pending** |
+| Game-ID forms (`1018403` = `10184` form 03) grouped with their creature, left unclassified; user names file | `tests/test_catalog.py`, `tests/test_studio.py`; ID scheme observed in the real install's prefab names |
+| First real conversion attempt (Tromber, 10184): AssetRipper outputs not matched to assets (0 meshes, 0 clips) | **Open**: export now logs unmatched exported file names to diagnose AssetRipper's naming |
 | Studio Stop button kills the step's whole process tree; progress lines drive the status bar | `tests/test_studio.py` (Linux; Windows `taskkill /T` path untested) |
 
 ## Not verified (no real files or tools available)

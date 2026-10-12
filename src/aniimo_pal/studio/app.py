@@ -501,6 +501,7 @@ class StudioApp:
         self.button(row, "Run all steps", lambda: self.creature_steps(steps.CREATURE_STEPS),
                     accent=True).pack(side="left", padx=6)
         self.button(row, "Open creature folder", self.open_creature_folder).pack(side="right")
+        self.button(row, "Set names…", self.set_names).pack(side="right", padx=6)
         row2 = ttk.Frame(right)
         row2.pack(fill="x", pady=(6, 0))
         self.button(row2, "Extract", lambda: self.creature_steps(("extract",))).pack(side="left")
@@ -613,6 +614,13 @@ class StudioApp:
             return
         info = [f"{sp['display_name']}  ({len(sp['assets'])} assets, {len(sp['animations'])} animations, "
                 f"{len(sp['skeleton']['bones'])} bones)"]
+        if sp.get("game_id"):
+            forms = sp.get("game_forms") or []
+            named = {p.get("game_form_index"): p.get("game_form_name") for p in sp["prefabs"]}
+            info.append(f"Game ID {sp['game_id']}" + (f" (internal name {sp['internal_name']})"
+                                                       if sp.get("internal_name") not in (None, sp["display_name"]) else "")
+                        + ("  ·  forms in the files: " + ", ".join(f"{i}" + (f" = {named[i]}" if named.get(i) else "")
+                                                                  for i in forms) if forms else ""))
         code = sp.get("codename")
         if code:
             info.append(f"Codename (guess from file names, ID {code['id']}): {code['value']}  ·  {code['evidence']}")
@@ -647,6 +655,58 @@ class StudioApp:
             info.append("No project yet: click 'Create project'.")
         self._set_creature_info("\n".join(info))
         self.show_preview_image(path)
+
+    def set_names(self) -> None:
+        """Give the selected creature (game ID) and its numbered forms the names you know from the game."""
+        sp = self.species_entry(self.selected_species())
+        if sp is None or not sp.get("game_id"):
+            messagebox.showinfo(TITLE, "Select a creature with a game ID number first.")
+            return
+        from aniimo_pal.catalog.names import apply_names, load_names, save_names
+
+        ws = steps.Workspace(self.layout)
+        gid = sp["game_id"]
+        current = load_names(ws.names)
+        win = tk.Toplevel(self.tk)
+        win.title(f"Names for game ID {gid}")
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, wraplength=460, justify="left", text=(
+            f"Internal name: {sp.get('internal_name') or sp['display_name']}. Type the names you see in the game. "
+            "Form numbers come from the files (e.g. 1018403 = form 03); what a number means differs per "
+            "creature, so name each one (e.g. 'Highland Form' or 'Prismana'). Leave a field empty to clear it.")
+                  ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(frm, text="Creature name").grid(row=1, column=0, sticky="w")
+        name_var = tk.StringVar(value=current["names"].get(gid, ""))
+        ttk.Entry(frm, textvariable=name_var, width=32).grid(row=1, column=1, sticky="we", pady=2)
+        form_vars = {}
+        for r, idx in enumerate(sp.get("game_forms") or [], start=2):
+            ttk.Label(frm, text=f"Form {idx}").grid(row=r, column=0, sticky="w")
+            form_vars[idx] = tk.StringVar(value=current["forms"].get(gid, {}).get(idx, ""))
+            ttk.Entry(frm, textvariable=form_vars[idx], width=32).grid(row=r, column=1, sticky="we", pady=2)
+
+        def save() -> None:
+            try:
+                data = save_names(ws.names, gid, name_var.get(), {i: v.get() for i, v in form_vars.items()})
+                cat = self.load_catalog()
+                if cat is not None:
+                    apply_names(cat, data)
+                    from aniimo_pal.manifest.io import write_json_atomic
+
+                    write_json_atomic(cat, ws.catalog, indent=None)
+                    self._catalog_cache = (ws.catalog.stat().st_mtime, cat)
+            except Exception as exc:  # report, never crash the GUI
+                messagebox.showerror(TITLE, str(exc), parent=win)
+                return
+            win.destroy()
+            self.refresh_species()
+            self.show_creature()
+
+        bar = ttk.Frame(frm)
+        bar.grid(row=99, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        ttk.Button(bar, text="Save", style="Accent.TButton", command=save).pack(side="left")
+        ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right")
+        self.names_dialog = win
 
     def choose_groups(self) -> None:
         """Pick which name groups (p_parmon, m_monster, …) are creatures; rebuilds the creature list."""

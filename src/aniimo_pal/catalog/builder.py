@@ -211,7 +211,8 @@ class _UnionFind:
         self.parent[self.find(a)] = self.find(b)
 
 
-def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None) -> dict[str, Any]:
+def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None,
+                  names: dict[str, Any] | None = None) -> dict[str, Any]:
     rules = rules or CatalogRules()
     idx = ObjectIndex(objects_doc)
     h = _Hierarchy(idx)
@@ -225,9 +226,21 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
     name_groups = _name_groups(all_candidates, rules)
     candidates = [c for c in all_candidates if name_selected(c["root"].get("name"), rules)]
 
-    # Group prefabs into species: shared mesh (verified), else same skeleton + name stem (inferred).
+    # Group prefabs into species: shared mesh (verified), same game ID (forms), else same skeleton + name stem.
     uf = _UnionFind(len(candidates))
     group_evidence: dict[int, set[str]] = defaultdict(set)
+    _assign_game_ids(candidates, rules)
+    by_base: dict[str, list[int]] = defaultdict(list)
+    for i, c in enumerate(candidates):
+        if c["game_id"]:
+            by_base[c["game_id"]].append(i)
+    for members in by_base.values():
+        for a in members:
+            for b in members:
+                if a < b and _prefixes_compatible(candidates[a]["id_prefix"], candidates[b]["id_prefix"]) \
+                        and uf.find(a) != uf.find(b):
+                    uf.union(a, b)
+                    group_evidence[b].add("same-game-id")
     mesh_owner: dict[str, int] = {}
     for i, c in enumerate(candidates):
         for m in c["meshes"]:
@@ -267,7 +280,7 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
                                      "paths not present in the skeleton")
 
     claimed = {a["object"] for s in species_list for a in s["animations"]}
-    return {
+    doc = {
         "schema": SCHEMA_ID,
         "schema_version": SCHEMA_VERSION,
         "generator": {"name": TOOL_NAME, "version": __version__},
@@ -286,6 +299,11 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
         },
         "species": species_list,
     }
+    if names is not None:
+        from aniimo_pal.catalog.names import apply_names
+
+        apply_names(doc, names)
+    return doc
 
 
 def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], rules: CatalogRules) -> dict[str, Any]:
@@ -316,6 +334,31 @@ def _diagnostics(idx: ObjectIndex, h: _Hierarchy, roots: list[dict[str, Any]], r
         "missing_mesh_files": [{"cab": cab, "count": n, "container": owners.get(cab)}
                                for cab, n in sorted(missing_mesh_targets.items(), key=lambda kv: -kv[1])[:10]],
     }
+
+
+def _assign_game_ids(candidates: list[dict[str, Any]], rules: CatalogRules) -> None:
+    """Set game_id / game_form / id_prefix on each candidate from its name.
+
+    ``P_Parmon_10184`` -> id 10184; ``NG_P_Parmon_1018403`` -> id 10184, form 03 (only when 10184 is also
+    the ID of another prefab, so plain long IDs are never split).
+    """
+    raw = []
+    for c in candidates:
+        toks = tokens(c["root"].get("name"))
+        pos = next((i for i, t in enumerate(toks) if t.isdigit() and len(t) >= rules.min_id_digits), None)
+        raw.append(("_".join(toks[:pos]), toks[pos]) if pos is not None else ("", None))
+    seen = {gid for _p, gid in raw if gid}
+    n = rules.form_index_digits
+    for c, (prefix, gid) in zip(candidates, raw, strict=True):
+        base, form = gid, None
+        if gid and len(gid) - n >= rules.min_id_digits and gid[:-n] in seen:
+            base, form = gid[:-n], gid[-n:]
+        c["game_id"], c["game_form"], c["id_prefix"] = base, form, prefix
+
+
+def _prefixes_compatible(a: str, b: str) -> bool:
+    """``p_parmon`` and ``ng_p_parmon`` name the same kind of object; ``eff_parmon`` does not."""
+    return not a or not b or a == b or a.endswith("_" + b) or b.endswith("_" + a)
 
 
 def _name_groups(candidates: list[dict[str, Any]], rules: CatalogRules, limit: int = 400) -> list[dict[str, Any]]:
@@ -435,16 +478,23 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
                     hits[label] = True
                     evidence.append(f"{source}-keyword:{hit[1]}")
                     break
+        form = "prismana" if hits.get("prismana") else "normal"
+        game_form = c.get("game_form")
+        if game_form and int(game_form) != 0 and not hits:
+            # A numbered game form (e.g. 03): its meaning (regional form, Prismana, ...) differs per creature,
+            # so it is left for the user to classify instead of guessed.
+            form = "unclassified"
+            evidence.append(f"game-form-index:{game_form}")
         prefabs.append({"object": root["id"], "name": root.get("name"), "asset_path": root.get("asset_path"),
                         "container": root.get("container"), "region": BASE_REGION,
-                        "form": "prismana" if hits.get("prismana") else "normal",
-                        "appearance": "shiny" if hits.get("shiny") else STANDARD,
-                        "variant_provenance": "inferred" if hits else "default", "variant_evidence": evidence,
-                        "_cand": c})
+                        "form": form, "appearance": "shiny" if hits.get("shiny") else STANDARD,
+                        "game_form_index": game_form,
+                        "variant_provenance": "inferred" if hits or game_form else "default",
+                        "variant_evidence": evidence, "_cand": c})
 
     for form in ("normal", "prismana"):
         standard = sorted((p for p in prefabs if p["form"] == form and p["appearance"] == STANDARD),
-                          key=lambda p: (len(p["name"] or ""), p["object"]))
+                          key=lambda p: (p["game_form_index"] is not None, len(p["name"] or ""), p["object"]))
         for p in standard[1:]:
             p["form"] = "unclassified"
             p["variant_evidence"].append("additional-prefab-without-distinguishing-keyword")
@@ -466,7 +516,9 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
     if not normals:
         warnings.append("no prefab without a variant keyword; normal variant must be chosen manually")
 
+    normals.sort(key=lambda p: (p["game_form_index"] is not None, len(p["name"] or ""), p["object"]))
     base = normals[0] if normals else prefabs[0]
+    game_id = base["_cand"].get("game_id")
     stem = _stem(base["name"], rules)
     key = stem
     n = 2
@@ -557,6 +609,8 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
         "suggested_id": f"aniimo_{key}"[:48],
         "display_name": _display(base["name"], rules),
         "codename": _codename(rules, base["name"], texts),
+        "game_id": game_id,
+        "game_forms": sorted({p["game_form_index"] for p in prefabs if p["game_form_index"]}),
         "grouping_evidence": group_evidence or ["single-prefab"],
         "prefabs": prefabs,
         "skeleton": skeleton,

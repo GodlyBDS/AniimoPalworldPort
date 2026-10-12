@@ -249,3 +249,39 @@ def test_update_rules_file_round_trips(tmp_path):
     assert rules.min_binding_ratio == 0.9 and rules.variant_keywords["shiny"] == ["glow"]
     assert load_rules(f) == rules
     assert update_rules_file(tmp_path / "new.toml", include_name_prefixes=[]).include_name_prefixes == []
+
+
+def test_game_forms_join_their_creature_and_stay_unclassified(tmp_path):
+    b = ub.SerializedBuilder()
+    ub.add_creature(b, "P_Parmon_10184", bones=ub.DEFAULT_BONES, clips=["Idle"])
+    ub.add_creature(b, "NG_P_Parmon_1018403", bones=ub.DEFAULT_BONES, clips=[], with_controller=False)
+    ub.add_creature(b, "NG_P_Parmon_1018400", bones=ub.DEFAULT_BONES, clips=[], with_controller=False)
+    ub.add_creature(b, "Eff_Parmon_10184_Skill", bones=ub.DEFAULT_BONES, clips=[], with_controller=False)
+    ub.add_creature(b, "P_Parmon_10033", bones=ub.DEFAULT_BONES, clips=[], with_controller=False)  # not 100 + 33
+    (tmp_path / "x.uab").write_bytes(ub.bundle(b.build(), "CAB-x"))
+    doc = build_inventory(scan(tmp_path, ScanConfig()), tmp_path)
+    cat = build_catalog(doc)
+    by_key = {s["key"]: s for s in cat["species"]}
+    assert set(by_key) == {"p_parmon_10184", "eff_parmon_10184_skill", "p_parmon_10033"}
+    tromber = by_key["p_parmon_10184"]
+    assert tromber["game_id"] == "10184" and tromber["game_forms"] == ["00", "03"]
+    assert "same-game-id" in tromber["grouping_evidence"]
+    forms = {p["name"]: (p["form"], p["game_form_index"]) for p in tromber["prefabs"]}
+    assert forms["P_Parmon_10184"] == ("normal", None)
+    assert forms["NG_P_Parmon_1018403"] == ("unclassified", "03")  # meaning differs per creature: user decides
+    assert forms["NG_P_Parmon_1018400"][1] == "00" and forms["NG_P_Parmon_1018400"][0] != "prismana"
+    assert by_key["p_parmon_10033"]["game_forms"] == []
+
+    from aniimo_pal.catalog.names import apply_names, load_names, save_names
+
+    f = tmp_path / "ws" / "creature_names.toml"
+    save_names(f, "10184", "Tromber", {"03": "Highland Form", "00": ""})
+    names = load_names(f)
+    assert names == {"names": {"10184": "Tromber"}, "forms": {"10184": {"03": "Highland Form"}}}
+    named = build_catalog(doc, None, names)
+    t = next(s for s in named["species"] if s["key"] == "p_parmon_10184")
+    assert t["display_name"] == "Tromber" and t["display_name_provenance"] == "user"
+    assert t["internal_name"] == "P Parmon 10184"
+    assert {p["name"]: p["game_form_name"] for p in t["prefabs"]}["NG_P_Parmon_1018403"] == "Highland Form"
+    save_names(f, "10184", "")  # clearing restores the internal name
+    assert apply_names(named, load_names(f)) == 0 and t["display_name"] == "P Parmon 10184"

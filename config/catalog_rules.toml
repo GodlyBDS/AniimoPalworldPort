@@ -15,6 +15,9 @@ max_binding_match_species = 3
 # Number tokens with at least this many digits are IDs (P_Parmon_10025) and stay in the species name;
 # shorter numbers (Foxlet_01) are treated as numbering and ignored.
 min_id_digits = 4
+# An ID that is another prefab's ID plus this many digits is a form of that creature (1018403 = 10184 form 03).
+# The tool never guesses what a form number means; forms other than 00 are left for you to classify.
+form_index_digits = 2
 # Keep only prefabs whose name starts with one of these prefixes (token form, e.g. "p_parmon");
 # empty = every rigged prefab. The Studio's "Choose creature groups" writes these for you.
 include_name_prefixes = []

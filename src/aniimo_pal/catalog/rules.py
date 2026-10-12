@@ -53,6 +53,9 @@ class CatalogRules:
     # Number tokens with at least this many digits are IDs (e.g. P_Parmon_10025) and stay part of the
     # species name; shorter ones (Foxlet_01) are treated as numbering and dropped.
     min_id_digits: int = 4
+    # An ID that is another prefab's ID plus this many digits is a form of that creature
+    # (e.g. 1018403 = creature 10184, form 03). What a form number means differs per creature.
+    form_index_digits: int = 2
     # Only prefabs whose name starts with one of these token prefixes are candidates (empty: all).
     include_name_prefixes: list[str] = field(default_factory=list)
     exclude_name_prefixes: list[str] = field(default_factory=list)
