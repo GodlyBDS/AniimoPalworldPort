@@ -143,7 +143,10 @@ class StepRunner:
         return self.base() + ["inventory", str(self.ws.manifest), self.game, "-o", str(self.ws.objects)]
 
     def cmd_catalog(self) -> list[str]:
-        rules = ["--rules", str(self.ws.catalog_rules)] if self.ws.catalog_rules.is_file() else []
+        # Your own group choice, else the Aniimo preset (creatures only: P_Parmon_* and their forms).
+        preset = self.layout.root / "config" / "catalog_rules_aniimo.toml"
+        chosen = self.ws.catalog_rules if self.ws.catalog_rules.is_file() else preset if preset.is_file() else None
+        rules = ["--rules", str(chosen)] if chosen else []
         rules += ["--names", str(self.ws.names)] if self.ws.names.is_file() else []
         return self.base() + ["catalog", "build", str(self.ws.objects), "-o", str(self.ws.catalog)] + rules
 

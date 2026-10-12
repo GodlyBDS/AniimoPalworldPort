@@ -440,7 +440,9 @@ class StudioApp:
         c = steps.read_json(ws.catalog)
         if c:
             cs = c["summary"]
-            lines.append(f"Creatures found: {cs['species_count']} (from {cs['prefab_count']} prefabs)")
+            lines.append(f"Creatures found: {cs['species_count']} ({cs.get('game_id_count', '?')} distinct creature IDs, "
+                         f"from {cs['prefab_count']} prefabs; {cs.get('prefabs_filtered_out', 0)} other rigged "
+                         "models such as effects, items and NPCs not shown)")
             if steps.is_older(ws.catalog, ws.objects):
                 lines.append("  This creature list is older than the object list: click '3. Find creatures'.")
             d = cs.get("diagnostics")
@@ -594,7 +596,8 @@ class StudioApp:
             shown += 1
         s = cat["summary"]
         hidden = s.get("prefabs_filtered_out", 0)
-        self.species_count.configure(text=f"{shown} of {len(cat['species'])} shown"
+        self.species_count.configure(text=f"{shown} of {len(cat['species'])} shown "
+                                     f"({s.get('game_id_count', '?')} creature IDs)"
                                      + (f"; {hidden} rigged prefabs hidden by your group choice" if hidden else
                                         "; all rigged models are listed (effects, items, … too): "
                                         "use 'Choose creature groups…'" if s.get("name_groups") else ""))
@@ -742,8 +745,8 @@ class StudioApp:
         for g in groups:
             tree.insert("", "end", iid=g["prefix"],
                         values=(g["prefix"], g["prefabs"], g["with_id"], ", ".join(g["examples"])))
-        tree.selection_set([g["prefix"] for g in groups
-                            if (g["selected"] if chosen_before else g["with_id"] > 0)])
+        filtered = chosen_before or not all(g["selected"] for g in groups)  # own choice or the Aniimo preset
+        tree.selection_set([g["prefix"] for g in groups if (g["selected"] if filtered else g["with_id"] > 0)])
         bar = ttk.Frame(win, padding=8)
         bar.pack(fill="x")
 

@@ -311,6 +311,8 @@ def build_catalog(objects_doc: dict[str, Any], rules: CatalogRules | None = None
         "rules": rules.to_dict(),
         "summary": {
             "species_count": len(species_list),
+            # Distinct creature IDs (forms and NPC variants of one creature share its ID).
+            "game_id_count": len({s["game_id"] for s in species_list if s.get("game_id")}),
             "prefab_count": len(candidates),
             "unassigned_clip_count": sum(1 for c in idx.by_class.get("AnimationClip", []) if c["id"] not in claimed),
             "ambiguous_clip_count": ambiguous,

@@ -388,3 +388,12 @@ def test_unresolvable_parts_are_recorded_and_hidden_parts_flagged(tmp_path):
     assert [(s["mesh_name"], s["active"]) for s in skel["skins"]] == [("M_Parmon_10503_Fur01_Rampage_-1659155025", False)]
     assert skel["unresolved_parts"] == [{"renderer": "M_Parmon_10503_Body",
                                          "candidates": ["M_Parmon_10503_Body_111111111", "M_Parmon_10503_Body_222222222"]}]
+
+
+def test_aniimo_preset_only_adds_the_creature_filter():
+    from dataclasses import replace
+    from pathlib import Path
+
+    preset = load_rules(Path(__file__).resolve().parents[1] / "config" / "catalog_rules_aniimo.toml")
+    assert preset.include_name_prefixes == ["p_parmon", "ng_p_parmon"]
+    assert replace(preset, include_name_prefixes=[]) == CatalogRules()

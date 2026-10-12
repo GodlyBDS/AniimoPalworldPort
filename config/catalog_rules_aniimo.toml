@@ -1,0 +1,51 @@
+# Aniimo preset: the default rules plus a creature filter observed in a real Aniimo install (1.0.0.281):
+# creature prefabs are named P_Parmon_<id> (e.g. P_Parmon_10184, P_Parmon_10181_Band) and their numbered
+# forms NG_P_Parmon_<id><form> (e.g. NG_P_Parmon_1018403). Everything else with a rigged model (Eff_* effects,
+# M_Item_*, NPC avatars, timelines, M_Monster_* bosses) is left out. The Studio uses this file until you
+# choose groups yourself ("Choose creature groups..." writes workspace/catalog_rules.toml).
+# Copy to <workspace>/rules/catalog.toml and pass with --rules to tune for a game; refine as you port creatures.
+# Matching is on name tokens (split on _ - . / space and camelCase), case-insensitive.
+
+[catalog]
+# Also treat MeshRenderer (non-skinned) prefabs as creature candidates.
+include_static_meshes = false
+# An unlinked AnimationClip is associated with a skeleton only if at least this many of its
+# bound transform paths (CRC32 hashes) exist in the skeleton AND this fraction of them matches.
+min_binding_matches = 3
+min_binding_ratio = 0.8
+# A clip that matches the skeletons of more species than this is not associated by binding match
+# (shared rigs, e.g. humanoid avatar parts, make such a match meaningless); it is counted as ambiguous.
+max_binding_match_species = 3
+# A mesh shared by more prefabs than this (e.g. a runtime placeholder like "SkinDummyMesh") does not group them.
+max_shared_mesh_prefabs = 16
+# Number tokens with at least this many digits are IDs (P_Parmon_10025) and stay in the species name;
+# shorter numbers (Foxlet_01) are treated as numbering and ignored.
+min_id_digits = 4
+# An ID that is another prefab's ID plus this many digits is a form of that creature (1018403 = 10184 form 03).
+# The tool never guesses what a form number means; forms other than 00 are left for you to classify.
+form_index_digits = 2
+# Keep only prefabs whose name starts with one of these prefixes (token form, e.g. "p_parmon");
+# empty = every rigged prefab. The Studio's "Choose creature groups" writes these for you.
+include_name_prefixes = ["p_parmon", "ng_p_parmon"]
+exclude_name_prefixes = []
+# Tokens ignored when deriving a species name from a prefab name.
+stop_tokens = ["prefab", "body", "mesh", "model", "lod0", "skin", "mdl", "char", "npc"]
+
+# Name keywords that mark a prefab/material as a rare variant (INFERRED evidence; user confirms).
+[catalog.variant_keywords]
+shiny = ["shiny", "rare", "alt", "color2", "colour2"]
+prismana = ["prismana", "prism", "rainbow"]
+
+# Name keywords for guessing an animation clip's role (INFERRED; never treated as game data).
+[catalog.clip_role_keywords]
+idle = ["idle", "stand", "wait", "breath"]
+walk = ["walk"]
+run = ["run", "sprint", "dash"]
+jump = ["jump", "fall", "land"]
+attack = ["attack", "atk", "melee", "bite", "claw", "slash", "combo"]
+skill = ["skill", "spell", "cast", "special"]
+ultimate = ["ult", "ultimate"]
+hit_react = ["hit", "hurt", "damage", "dmg"]
+death = ["die", "death", "dead"]
+sleep = ["sleep", "rest"]
+transform = ["transform", "morph"]

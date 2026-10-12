@@ -225,6 +225,10 @@ def test_step_options_rules_and_proposed(layout, tmp_path):
     r = steps.StepRunner(layout, str(tmp_path / "Aniimo"), {"assetripper": "/t/ar", "blender": "/t/blender"})
     cfile = r.ws.creature_file("aniimo_foxlet")
     assert "--rules" not in r.cmd_catalog()
+    (layout.root / "config").mkdir()
+    preset = layout.root / "config" / "catalog_rules_aniimo.toml"
+    preset.write_text("[catalog]\n")
+    assert r.cmd_catalog()[-2:] == ["--rules", str(preset)]  # Aniimo preset until the user chooses groups
     r.ws.root.mkdir(parents=True, exist_ok=True)
     r.ws.catalog_rules.write_text("[catalog]\n")
     assert r.cmd_catalog()[-2:] == ["--rules", str(r.ws.catalog_rules)] and layout.contains(r.ws.catalog_rules)

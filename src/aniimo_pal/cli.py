@@ -517,7 +517,8 @@ def cmd_catalog_build(args: argparse.Namespace, config: Config) -> int:
     doc = build_catalog(_read_json(args.objects), load_rules(args.rules), names)
     write_json_atomic(doc, args.output, indent=config.manifest.indent)
     s = doc["summary"]
-    print(f"species {s['species_count']} from {s['prefab_count']} prefabs; unassigned clips {s['unassigned_clip_count']} "
+    print(f"species {s['species_count']} ({s['game_id_count']} distinct game IDs) from {s['prefab_count']} prefabs "
+          f"({s['prefabs_filtered_out']} other rigged models filtered out); unassigned clips {s['unassigned_clip_count']} "
           f"(of which fit too many skeletons to assign: {s['ambiguous_clip_count']})")
     d = s["diagnostics"]
     print(f"renderers {d['renderers']}: with mesh {d['renderers_with_mesh']}, with GameObject "
