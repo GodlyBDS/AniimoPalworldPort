@@ -271,3 +271,26 @@ def test_body_and_rigid_eyes_become_one_model(tmp_path):
 
     preview = build_preview(c, path.parent)
     assert (path.parent / "preview" / "preview.blend").is_file() and [v["label"] for v in preview["variants"]] == ["Normal"]
+
+
+def test_part_hidden_by_default_is_left_out_of_the_model(tmp_path):
+    pytest.importorskip("bpy")
+    from aniimo_pal.convert.pipeline import convert_creature
+    from aniimo_pal.extract import extract_creature
+
+    b = ub.SerializedBuilder()
+    ub.add_creature(b, "Foxlet", bones=list(BONES), clips=[], bone_locals=BONES)
+    _add_rigid_eye(b)
+    eye_go = next(o for o in b._objects if o.class_id == 1 and o.data["m_Name"] == "Eye")
+    eye_go.data["m_IsActive"] = False  # e.g. a "Rampage" part the game switches on later
+    root = tmp_path / "game"
+    root.mkdir()
+    (root / "foxlet.bundle").write_bytes(ub.bundle(b.build(), "CAB-foxlet"))
+    cat = build_catalog(build_inventory(scan(root, ScanConfig()), root))
+    c = creature_from_catalog(cat, "foxlet")
+    path = save_creature(c, creature_path(tmp_path / "ws", c["id"]))
+    extract_creature(c, path.parent, root, include_proposed=True)
+    report = convert_creature(c, path.parent, include_proposed=True)
+    by_mesh = {m["mesh"]: m for m in report["meshes"]}
+    assert by_mesh["Foxlet_Eye"]["status"] == "skipped" and "hidden by default" in by_mesh["Foxlet_Eye"]["error"]
+    assert report["model"]["status"] == "ok" and report["model"]["parts"] == 1

@@ -42,6 +42,12 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
     skeleton = creature.get("skeleton") or {}
     skins = skeleton.get("skins") or []
     if not skins:
+        unresolved = skeleton.get("unresolved_parts") or []
+        if unresolved:
+            detail = "; ".join(f"{u['renderer']} ({len(u['candidates'])} candidate meshes: "
+                               f"{', '.join(u['candidates'][:3]) or 'none'})" for u in unresolved[:6])
+            raise ToolkitError("the creature's renderers use a runtime placeholder mesh and the real meshes could "
+                               f"not be identified: {detail}")
         raise ToolkitError("creature has no skinned mesh in its skeleton (re-run catalog build with this toolkit "
                            "version and recreate the project, or add skeleton.skins)")
     locals_ = skeleton_locals(skeleton)
@@ -66,7 +72,13 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
     # One rigged model per creature: every skinned part (body, eyes, ...) on one shared skeleton.
     outputs, parts = [], []
     identity = [[1.0 if r == c else 0.0 for c in range(4)] for r in range(4)]
+    any_active = any(s.get("active", True) for s in skins)
     for skin in skins:
+        if any_active and skin.get("active") is False:
+            outputs.append({"mesh": skin.get("mesh_name"), "status": "skipped",
+                            "error": "hidden by default in the prefab (alternative state the game switches on, "
+                                     "e.g. a Rampage look); not part of the base model"})
+            continue
         entry = by_object.get(skin["mesh"])
         if entry is None or not _usable(entry[1], include_proposed):
             outputs.append({"mesh": skin.get("mesh_name"), "status": "skipped",
@@ -106,6 +118,10 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
         parts.append({"glb": creature_dir / glbs[0], "joints": joints, "bind_poses": bind_poses})
         outputs.append(rec)
 
+    for u in skeleton.get("unresolved_parts") or []:
+        outputs.append({"mesh": u["renderer"], "status": "skipped",
+                        "error": f"real mesh behind the runtime placeholder not identified "
+                                 f"({len(u['candidates'])} candidates)"})
     model: dict[str, Any] | None = None
     if parts:
         name = _SAFE.sub("_", creature["id"])

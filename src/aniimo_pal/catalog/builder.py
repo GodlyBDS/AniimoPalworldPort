@@ -102,6 +102,7 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
     renderers, animators, legacy_anims = [], [], []
     path_of_transform: dict[str, str] = {}
     local_trs: dict[str, dict[str, Any]] = {}
+    own_active = {path: (go.get("info") or {}).get("active") is not False for go, path in nodes}
     for go, path in nodes:
         tr = h.go_transform.get(go["id"])
         if tr is not None:
@@ -148,7 +149,11 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
                           "renderer_path": path_of_transform.get((h.go_transform.get(go["id"]) or {}).get("id")),
                           "bones": [ordered.get(i) for i in range(max(ordered) + 1)] if ordered else [],
                           "root_bone": path_of_transform.get(root_bone["id"]) if root_bone else None,
-                          "materials": [m["id"] for m in idx.refs(r, "m_Materials")]})
+                          "materials": [m["id"] for m in idx.refs(r, "m_Materials")],
+                          # Hidden in the prefab (this object or a parent inactive): an alternative state the
+                          # game switches on at runtime, e.g. Grizbo's "Rampage" fur.
+                          "active": _active_in_prefab(own_active, path_of_transform.get(
+                              (h.go_transform.get(go["id"]) or {}).get("id")))})
     if not meshes:
         return None
 
@@ -178,6 +183,14 @@ def _prefab_candidate(idx: ObjectIndex, h: _Hierarchy, root: dict[str, Any], rul
         "bone_paths": sorted(set(bones.values())), "skeleton_paths": skeleton_paths,
         "controllers": controllers, "avatars": avatars, "clips": clips, "local_trs": local_trs, "skins": skins,
     }
+
+
+def _active_in_prefab(own_active: dict[str, bool], path: str | None) -> bool:
+    if path is None:
+        return True
+    parts = path.split("/") if path else []
+    prefixes = [""] + ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+    return all(own_active.get(p, True) for p in prefixes)
 
 
 def _material_textures(idx: ObjectIndex, mat: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -379,20 +392,49 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
         if not any(s["mesh"] in placeholders for s in c["skins"]):
             continue
         meshes = {m["id"]: m for m in c["meshes"] if m["id"] not in placeholders}
+        id_tokens = {t for t in tokens(c["root"].get("name")) if t.isdigit() and len(t) >= rules.min_id_digits}
+        # Build numbers of real meshes this prefab already uses directly: its other parts share them.
+        own_numbers: dict[str, int] = defaultdict(int)
+        for m in meshes.values():
+            if (mb := _MESH_BUILD_NAME.match(m.get("name") or "")) is not None:
+                own_numbers[mb["num"]] += 1
+        pending = []
+        votes: dict[str, int] = defaultdict(int)
         for s in c["skins"]:
             if s["mesh"] not in placeholders:
                 continue
             go_name = (s.get("renderer_path") or c["root"].get("name") or "").rsplit("/", 1)[-1]
             found = by_name.get(_norm_name(go_name), [])
+            by_num: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for m in found:
+                mb = _MESH_BUILD_NAME.match(m["name"])
+                by_num[mb["num"] if mb else ""].append(m)
+            for num in by_num:
+                votes[num] += 1
+            pending.append((s, go_name, found, by_num))
+        for s, go_name, found, by_num in pending:
             names = {m["name"] for m in found}
+            choice, how = None, "renderer-name"
             if len(names) == 1:
-                real = sorted(found, key=lambda m: m["id"])[0]
+                choice = found
+            elif by_num:
+                # Same base name, several build numbers (other versions of the model): prefer the mesh whose
+                # bundle names this prefab's ID, then the build number shared with the prefab's other parts.
+                score = {num: (max(len(id_tokens & set(tokens(m.get("container")))) for m in group),
+                               own_numbers.get(num, 0), votes[num]) for num, group in by_num.items()}
+                ranked = sorted(by_num, key=lambda n: tuple(-x for x in score[n]) + (n,))
+                if (len(ranked) == 1 or score[ranked[0]] > score[ranked[1]]) and \
+                        len({m["name"] for m in by_num[ranked[0]]}) == 1:
+                    choice, how = by_num[ranked[0]], "renderer-name+build-number"
+            if choice:
+                real = sorted(choice, key=lambda m: m["id"])[0]
                 s.update(placeholder_mesh=s["mesh"], mesh=real["id"], mesh_name=real["name"],
-                         mesh_source="renderer-name", mesh_provenance="inferred")
+                         mesh_source=how, mesh_provenance="inferred")
                 meshes[real["id"]] = real
                 resolved += 1
             else:
-                s.update(placeholder_mesh=s["mesh"], mesh=None, unresolved_placeholder=go_name)
+                s.update(placeholder_mesh=s["mesh"], mesh=None)
+                c.setdefault("unresolved_parts", []).append({"renderer": go_name, "candidates": sorted(names)[:8]})
                 unresolved += 1
                 if len(examples) < 10:
                     examples.append(f"{c['root'].get('name')}: renderer {go_name!r} "
@@ -401,6 +443,9 @@ def _resolve_placeholder_meshes(idx: ObjectIndex, candidates: list[dict[str, Any
         c["skins"] = [s for s in c["skins"] if s["mesh"]]
     return {"placeholder_mesh_ids": sorted(placeholders), "renderers_resolved": resolved,
             "renderers_unresolved": unresolved, "unresolved_examples": examples}
+
+
+_MESH_BUILD_NAME = re.compile(r"^(?P<base>.+)_(?P<num>-?\d{6,})$")
 
 
 def _norm_name(name: str | None) -> str:
@@ -660,6 +705,8 @@ def _species(idx: ObjectIndex, rules: CatalogRules, members: list[dict[str, Any]
         "avatar": base_cand["avatars"][0]["id"] if base_cand["avatars"] else None,
         # Per skinned renderer: mesh + ordered joint paths (blend indices refer to this order).
         "skins": base_cand["skins"],
+        # Renderers whose real mesh (behind a runtime placeholder) could not be identified.
+        "unresolved_parts": base_cand.get("unresolved_parts", []),
     }
     for p in prefabs:
         if p is not base and p["_cand"]["bone_paths"] != base_cand["bone_paths"]:

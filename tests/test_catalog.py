@@ -326,3 +326,65 @@ def test_placeholder_renderer_resolved_to_real_mesh_by_name(tmp_path):
     assert [a["name"] for a in meshes] == ["M_Parmon_10503_Body_1597918372"]
     assert meshes[0]["container"] == "m_parmon_10503_body.uab"
     assert cat["summary"]["placeholder_meshes"]["renderers_resolved"] == 1
+
+
+def _placeholder_creature(b, name, parts):
+    """Prefab ``name`` whose renderers (GameObjects named ``parts``) all use one placeholder mesh."""
+    dummy = ub.add_triangle_mesh(b, "SkinDummyMesh", ub.DEFAULT_BONES)
+    ids = ub.add_creature(b, name, bones=ub.DEFAULT_BONES, clips=[], with_controller=False, mesh=dummy)["normal"]
+    body_go = next(o for o in b._objects if o.class_id == 1 and o.data["m_Name"] == f"{name}_Body")
+    body_go.data["m_Name"] = parts[0]
+    root_tr = next(o for o in b._objects if o.class_id == 4 and o.data["m_GameObject"]["m_PathID"] == ids.root_go)
+    gos = {}
+    for part in parts[1:]:
+        go = b.add(1, m_Name=part, m_IsActive=True)
+        tr = b.add(4, m_GameObject=ub.pptr(go), m_Father=ub.pptr(root_tr.path_id), m_LocalRotation={"w": 1.0},
+                   m_LocalScale={"x": 1.0, "y": 1.0, "z": 1.0})
+        root_tr.data["m_Children"] = list(root_tr.data["m_Children"]) + [ub.pptr(tr)]
+        smr = b.add(137, m_GameObject=ub.pptr(go), m_Enabled=True, m_Mesh=ub.pptr(dummy), m_Bones=[],
+                    m_RootBone=ub.pptr(root_tr.path_id))
+        b.get(go)["m_Component"] = [{"component": ub.pptr(tr)}, {"component": ub.pptr(smr)}]
+        gos[part] = go
+    return gos
+
+
+def test_ambiguous_placeholder_names_resolved_by_container_id_and_shared_build_number(tmp_path):
+    b = ub.SerializedBuilder()
+    _placeholder_creature(b, "P_Parmon_10184", ["M_Parmon_10184_Body", "M_Parmon_10184_Eye"])
+    (tmp_path / "p.uab").write_bytes(ub.bundle(b.build(), "CAB-p"))
+    meshes = {"a.uab": ["M_Parmon_10184_Body_-1771000540", "M_Parmon_10184_Eye_-1771000540"],
+              "b.uab": ["M_Parmon_10184_Body_123456789"]}  # another version with the same base name
+    for i, (bundle, names) in enumerate(meshes.items()):
+        m = ub.SerializedBuilder()
+        for n in names:
+            ub.add_triangle_mesh(m, n, ub.DEFAULT_BONES)
+        (tmp_path / bundle).write_bytes(ub.bundle(m.build(), f"CAB-m{i}"))
+    cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))
+    skins = cat["species"][0]["skeleton"]["skins"]
+    assert sorted(s["mesh_name"] for s in skins) == ["M_Parmon_10184_Body_-1771000540", "M_Parmon_10184_Eye_-1771000540"]
+    body = next(s for s in skins if "Body" in s["mesh_name"])
+    assert body["mesh_source"] == "renderer-name+build-number" and cat["species"][0]["skeleton"]["unresolved_parts"] == []
+
+    # A form prefab whose bundle carries its own ID picks the mesh from that bundle.
+    (tmp_path / "b.uab").rename(tmp_path / "m_parmon_1018403.uab")
+    b2 = ub.SerializedBuilder()
+    _placeholder_creature(b2, "NG_P_Parmon_1018403", ["M_Parmon_10184_Body"])
+    (tmp_path / "p.uab").write_bytes(ub.bundle(b2.build(), "CAB-p"))
+    cat = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))
+    assert [s["mesh_name"] for s in cat["species"][0]["skeleton"]["skins"]] == ["M_Parmon_10184_Body_123456789"]
+
+
+def test_unresolvable_parts_are_recorded_and_hidden_parts_flagged(tmp_path):
+    b = ub.SerializedBuilder()
+    gos = _placeholder_creature(b, "P_Parmon_10503", ["M_Parmon_10503_Body", "M_Parmon_10503_Fur01_Rampage"])
+    b.get(gos["M_Parmon_10503_Fur01_Rampage"])["m_IsActive"] = False
+    (tmp_path / "p.uab").write_bytes(ub.bundle(b.build(), "CAB-p"))
+    m = ub.SerializedBuilder()
+    for n in ("M_Parmon_10503_Fur01_Rampage_-1659155025", "M_Parmon_10503_Body_111111111",
+              "M_Parmon_10503_Body_222222222"):
+        ub.add_triangle_mesh(m, n, ub.DEFAULT_BONES)
+    (tmp_path / "m.uab").write_bytes(ub.bundle(m.build(), "CAB-m"))
+    skel = build_catalog(build_inventory(scan(tmp_path, ScanConfig()), tmp_path))["species"][0]["skeleton"]
+    assert [(s["mesh_name"], s["active"]) for s in skel["skins"]] == [("M_Parmon_10503_Fur01_Rampage_-1659155025", False)]
+    assert skel["unresolved_parts"] == [{"renderer": "M_Parmon_10503_Body",
+                                         "candidates": ["M_Parmon_10503_Body_111111111", "M_Parmon_10503_Body_222222222"]}]
