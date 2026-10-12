@@ -390,9 +390,19 @@ def cmd_creature_convert(args: argparse.Namespace, config: Config) -> int:
             print(f"  {m['status'].upper()} {m['mesh']}: {m.get('error')}")
         else:
             print(f"  ok {m['mesh']}: {m['fbx']} ({len(m['clips'])} clips)")
-    for e in report["clip_errors"]:
-        print(f"  clip error {e['name']}: {e['error']}")
-    return EXIT_OK if s["errors"] == 0 else EXIT_CHECK_FAILED
+    clip_errors = report["clip_errors"]
+    if clip_errors:
+        from collections import Counter
+
+        reasons = Counter(e["error"] for e in clip_errors)
+        print(f"  WARNING {len(clip_errors)} animation(s) not converted (the model is still usable):")
+        for reason, n in reasons.most_common(5):
+            print(f"    {n} x {reason}")
+        for e in clip_errors[:8]:
+            print(f"    e.g. {e['name']}")
+    mesh_failed = any(m["status"] == "error" for m in report["meshes"])
+    # Missing animations do not fail the step: a rigged model without clips is still a result.
+    return EXIT_OK if s["meshes_ok"] and not mesh_failed else EXIT_CHECK_FAILED
 
 
 def cmd_creature_preview(args: argparse.Namespace, config: Config) -> int:

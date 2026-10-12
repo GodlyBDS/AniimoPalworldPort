@@ -505,7 +505,8 @@ class StudioApp:
         row2 = ttk.Frame(right)
         row2.pack(fill="x", pady=(6, 0))
         self.button(row2, "Extract", lambda: self.creature_steps(("extract",))).pack(side="left")
-        self.button(row2, "Export with AssetRipper", lambda: self.creature_steps(("primary", "project"))).pack(side="left", padx=6)
+        self.button(row2, "Export animations (AssetRipper)",
+                    lambda: self.creature_steps(("project",))).pack(side="left", padx=6)
         self.button(row2, "Convert to FBX (Blender)", lambda: self.creature_steps(("convert",))).pack(side="left")
         row_p = ttk.Frame(right)
         row_p.pack(fill="x", pady=(6, 0))

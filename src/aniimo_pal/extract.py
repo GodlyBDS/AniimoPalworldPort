@@ -189,6 +189,14 @@ def _export_one(reader, asset: dict[str, Any], out_root: Path, unique, texture_f
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="") as fh:
             fh.write(mesh.export())
+        # Skinned-ready GLB written by the toolkit itself (same conventions as AssetRipper's mesh GLB;
+        # AssetRipper 2.0 exported real Aniimo meshes only as JSON dumps).
+        try:
+            from aniimo_pal.convert.unity_mesh_glb import unity_mesh_to_glb
+
+            unity_mesh_to_glb(mesh, out_root / (rel[:-4] + ".glb"))
+        except Exception as exc:  # the OBJ is still useful; conversion reports the missing GLB
+            log.warning("mesh %s: GLB not written: %s", mesh.m_Name, exc)
         # Skinning data needed to rig the mesh later (bind poses are Unity row/column e<row><col>).
         d = reader.parse_as_dict(check_read=False)
         bindposes = [[[float(m[f"e{r}{c}"]) for c in range(4)] for r in range(4)] for m in d.get("m_BindPose") or []]

@@ -116,15 +116,34 @@ def ub_fixture():
     return Path(__file__).parent / "fixtures" / "Foxlet_Wag.anim"
 
 
-def test_convert_requires_assetripper_mesh(skinned_game, tmp_path, capsys):
+def test_convert_requires_extracted_mesh(skinned_game, tmp_path, capsys):
     cat = build_catalog(build_inventory(scan(skinned_game, ScanConfig()), skinned_game))
     c = creature_from_catalog(cat, "foxlet")
     path = save_creature(c, creature_path(tmp_path / "ws", c["id"]))
     from aniimo_pal.convert.pipeline import convert_creature
 
     report = convert_creature(c, path.parent)
-    assert report["meshes"][0]["status"] == "error" and "export-assetripper" in report["meshes"][0]["error"]
+    assert report["meshes"][0]["status"] == "error" and "creature extract" in report["meshes"][0]["error"]
     assert c["status"] == "mapped"
+
+
+def test_extract_writes_skinned_glb_and_convert_needs_no_assetripper_for_meshes(skinned_game, tmp_path):
+    pytest.importorskip("bpy")
+    from aniimo_pal.convert.pipeline import convert_creature
+    from aniimo_pal.convert.skin_assembly import read_glb
+    from aniimo_pal.extract import extract_creature
+
+    cat = build_catalog(build_inventory(scan(skinned_game, ScanConfig()), skinned_game))
+    c = creature_from_catalog(cat, "foxlet")
+    path = save_creature(c, creature_path(tmp_path / "ws", c["id"]))
+    extract_creature(c, path.parent, skinned_game, include_proposed=True)
+    mesh = next(a for a in c["assets"] if a["role"] == "mesh")
+    glb = path.parent / (mesh["extracted"][:-4] + ".glb")
+    doc, _ = read_glb(glb)
+    assert {"POSITION", "JOINTS_0", "WEIGHTS_0"} <= set(doc["meshes"][0]["primitives"][0]["attributes"])
+    report = convert_creature(c, path.parent, include_proposed=True)
+    assert report["meshes"][0]["status"] == "ok", report["meshes"][0]
+    assert (path.parent / report["meshes"][0]["fbx"]).is_file()
 
 
 @pytest.mark.skipif(not os.environ.get("ASSETRIPPER_PATH"), reason="set ASSETRIPPER_PATH to run against real AssetRipper")
@@ -153,3 +172,46 @@ def test_full_cli_pipeline_with_real_assetripper(skinned_game, tmp_path, capsys)
     assert m["blender"]["meshes"][0]["skinned"] and m["blender"]["meshes"][0]["unweighted_vertices"] == 0
     assert m["clips"][0]["max_head_error_m"] < 1e-6
     assert main(["verify", str(ws / "m.json"), str(root)]) == EXIT_OK  # game files untouched
+
+
+@pytest.mark.skipif(not os.environ.get("ASSETRIPPER_PATH"), reason="set ASSETRIPPER_PATH to run against real AssetRipper")
+def test_own_mesh_glb_matches_assetripper_triangle_by_triangle(skinned_game, tmp_path):
+    import numpy as np
+    import UnityPy
+
+    from aniimo_pal.adapters.assetripper import AssetRipperSession
+    from aniimo_pal.convert.skin_assembly import read_glb
+    from aniimo_pal.convert.unity_mesh_glb import unity_mesh_to_glb
+
+    with AssetRipperSession(os.environ["ASSETRIPPER_PATH"], tmp_path / "logs") as s:
+        s.load_files([skinned_game / "foxlet.bundle"])
+        s.export(tmp_path / "primary", "primary")
+    ar_glb = next((tmp_path / "primary").rglob("Foxlet_Body.glb"))
+    mesh = next(o.read() for o in UnityPy.load(str(skinned_game / "foxlet.bundle")).objects if o.type.name == "Mesh")
+    unity_mesh_to_glb(mesh, tmp_path / "ours.glb")
+
+    def corners(path):
+        doc, binary = read_glb(path)
+        prim = doc["meshes"][0]["primitives"][0]
+        dtypes = {5126: np.float32, 5123: np.uint16, 5125: np.uint32, 5121: np.uint8}
+        sizes = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
+
+        def acc(i):
+            a = doc["accessors"][i]
+            v = doc["bufferViews"][a["bufferView"]]
+            dt, n = np.dtype(dtypes[a["componentType"]]), sizes[a["type"]]
+            start = v.get("byteOffset", 0) + a.get("byteOffset", 0)
+            stride = v.get("byteStride") or dt.itemsize * n
+            raw = np.frombuffer(binary[start:start + stride * a["count"]], dtype=np.uint8).reshape(a["count"], stride)
+            return np.frombuffer(raw[:, :dt.itemsize * n].tobytes(), dtype=dt).reshape(a["count"], n)
+
+        attrs = {k: acc(i).astype(float) for k, i in prim["attributes"].items()
+                 if k in ("POSITION", "JOINTS_0", "WEIGHTS_0")}
+        out = []
+        for tri in acc(prim["indices"]).reshape(-1, 3).astype(int):
+            c = [tuple(np.round(np.concatenate([attrs[k][i] for k in sorted(attrs)]), 5)) for i in tri]
+            k = min(range(3), key=lambda j: c[j])
+            out.append(tuple(c[k:] + c[:k]))  # rotating keeps the winding
+        return sorted(out)
+
+    assert corners(tmp_path / "ours.glb") == corners(ar_glb)

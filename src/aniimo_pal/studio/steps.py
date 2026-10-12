@@ -215,8 +215,10 @@ class StepRunner:
         return True
 
 
-CREATURE_STEPS = ("extract", "primary", "project", "convert", "preview")
-STEP_LABELS = {"extract": "extract", "primary": "AssetRipper model export", "project": "AssetRipper animation export",
+# AssetRipper's model ("primary") export is no longer part of the pipeline: `extract` writes the mesh GLB itself.
+CREATURE_STEPS = ("extract", "project", "convert", "preview")
+STEP_LABELS = {"extract": "extract (models, textures)", "primary": "AssetRipper model export",
+               "project": "AssetRipper animation export",
                "convert": "convert to FBX", "preview": "3D preview"}
 
 
@@ -236,9 +238,9 @@ def step_done(creature_dir: Path, step: str) -> bool:
 def with_prerequisites(creature_dir: Path, which: tuple[str, ...]) -> tuple[str, ...]:
     """``which`` plus the earlier steps it needs that have not run yet, in pipeline order.
 
-    The preview needs the converted FBX; conversion needs both AssetRipper exports.
+    The preview needs the converted FBX; conversion needs the extracted mesh and AssetRipper's animations.
     """
-    needs = {"preview": ("convert",), "convert": ("primary", "project")}
+    needs = {"preview": ("convert",), "convert": ("extract", "project")}
     wanted = set(which)
     todo = list(which)
     while todo:

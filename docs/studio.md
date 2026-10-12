@@ -59,8 +59,10 @@ that overlaps its own data folder.
      then uses the proposed links (they stay marked as proposed);
    - a step that needs earlier ones (the preview needs the converted model,
      conversion needs the AssetRipper exports) offers to run them first;
-   - *Run all steps*: extract → AssetRipper (models + Unity project) →
-     convert to FBX → build 3D preview;
+   - *Run all steps*: extract (models with skin weights, textures) →
+     AssetRipper animation export → convert to FBX → build 3D preview.
+     Missing animations do not stop the model conversion (they are listed
+     as warnings);
    - the **3D preview** tab shows every variant side by side (Normal, each
      Shiny appearance, Prismana) with its real extracted texture;
    - *Open 3D preview in Blender* opens the same scene in Blender. Every

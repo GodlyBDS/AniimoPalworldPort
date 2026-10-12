@@ -235,11 +235,12 @@ def test_step_options_rules_and_proposed(layout, tmp_path):
 
 def test_missing_earlier_steps_are_added_in_order(tmp_path):
     d = tmp_path / "creature"
-    assert steps.with_prerequisites(d, ("preview",)) == ("primary", "project", "convert", "preview")
+    assert steps.with_prerequisites(d, ("preview",)) == ("extract", "project", "convert", "preview")
     assert steps.with_prerequisites(d, ("extract",)) == ("extract",)
-    for mode in ("primary", "project"):
-        (d / "extract" / "assetripper" / mode).mkdir(parents=True)
-        (d / "extract" / "assetripper" / mode / "x.glb").write_bytes(b"x")
+    (d / "extract" / "unitypy").mkdir(parents=True)
+    (d / "extract" / "unitypy" / "report.json").write_text("{}")
+    (d / "extract" / "assetripper" / "project").mkdir(parents=True)
+    (d / "extract" / "assetripper" / "project" / "x.anim").write_bytes(b"x")
     assert steps.with_prerequisites(d, ("preview",)) == ("convert", "preview")
     (d / "convert").mkdir()
     (d / "convert" / "report.json").write_text("{}")

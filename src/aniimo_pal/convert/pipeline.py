@@ -69,10 +69,14 @@ def convert_creature(creature: dict[str, Any], creature_dir: str | Path, *, blen
                             "error": "mesh asset not confirmed in this creature project"})
             continue
         idx, mesh_asset = entry
-        glbs = [f for f in (mesh_asset.get("assetripper") or {}).get("primary", []) if f.lower().endswith(".glb")]
+        # Mesh GLB: the toolkit's own (written by `creature extract`), else AssetRipper's primary export.
+        own = mesh_asset.get("extracted", "")
+        own_glb = own[:-4] + ".glb" if own.endswith(".obj") else ""
+        glbs = [own_glb] if own_glb and (creature_dir / own_glb).is_file() else []
+        glbs += [f for f in (mesh_asset.get("assetripper") or {}).get("primary", []) if f.lower().endswith(".glb")]
         if not glbs:
             outputs.append({"mesh": mesh_asset.get("name"), "status": "error",
-                            "error": "no mesh GLB: run `creature export-assetripper --mode primary` first"})
+                            "error": "no mesh GLB: run `creature extract` (writes it) first"})
             continue
         name = _SAFE.sub("_", mesh_asset.get("name") or f"mesh_{idx}")
         work = creature_dir / "convert" / name
